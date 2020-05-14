@@ -162,8 +162,8 @@ matchOnExpr t (GHC.Var v, tx, c)
   = matchOn t (v, tx, c)
 matchOnExpr t (e, tx, c)
   = do  freshV <- freshVarType tx
-        freshSpecTy <- liftCG $ trueTy tx
-        -- use consE
+        cge <- sCGEnv <$> get 
+        freshSpecTy <- liftCG $ consE cge e
         addEnv freshV freshSpecTy
         es <- matchOn t (freshV, tx, c)
         return $ GHC.Let (GHC.NonRec freshV e) <$> es

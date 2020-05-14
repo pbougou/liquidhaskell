@@ -108,7 +108,8 @@ fromAnf' (Let bnd e) bnds
 fromAnf' (Var var) bnds 
   = (fromMaybe (Var var) (lookup var bnds), bnds)
 fromAnf' (Case scr bnd tp alts) bnds
-  = (Case scr bnd tp (map (\(altc, xs, e) -> (altc, xs, fst $ fromAnf' e bnds)) alts), bnds)
+  = let scr' = fromMaybe (Var bnd) (lookup bnd bnds)
+    in  (Case scr' bnd tp (map (\(altc, xs, e) -> (altc, xs, fst $ fromAnf' e bnds)) alts), bnds)
 fromAnf' (App e1 e2) bnds
   = let (e1', bnds')  = fromAnf' e1 bnds 
         (e2', bnds'') = fromAnf' e2 bnds'
@@ -123,7 +124,7 @@ fromAnf' _ _
 -- | Function used for pretty printing core as Haskell source.
 --   Input does not contain let bindings.
 coreToHs :: SpecType -> Var -> CoreExpr -> String
-coreToHs t v e = pprintSymbols (discardModName v ++ pprintFormals caseIndent v e (tracepp " cnt " cnt) [])
+coreToHs t v e = pprintSymbols (discardModName v ++ pprintFormals caseIndent v e cnt [])
   where cnt = countTcConstraints t
 
 symbols :: String
