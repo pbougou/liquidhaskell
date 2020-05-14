@@ -18,7 +18,7 @@ abs' x = if x >= 0 then x else -x
                         listElts xs == S.union (listElts (fst v)) (listElts (snd v)) }
  @-}
 split :: [a] -> ([a], [a])
--- split = _goal
+split = _goal
 -- split xs = 
 --     case xs of 
 --         [] -> (xs, xs)
@@ -28,9 +28,3 @@ split :: [a] -> ([a], [a])
 --                 x11:x12 ->
 --                     case split x12 of
 --                         (x16, x17) -> (x11:x16, x5:x17)
-split x_S0 =
-    case x_S0 of
-        [] -> ([], [])
-        (:) x_SB x_SC ->
-            case split x_S0 of
-                (,) x_S3f x_S3g -> (x_S3f, x_S3g)
