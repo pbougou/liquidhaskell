@@ -377,6 +377,9 @@ config = cmdArgsMode $ Config {
   , maxArgsDepth
     = def 
         &= name "max-args-depth"
+  , debugOut
+    = False &= name "debug-out"
+            &= help "Print the program output in Core format."
   } &= verbosity
     &= program "liquid"
     &= help    "Refinement Types for Haskell"
@@ -613,6 +616,7 @@ defConfig = Config
   , maxMatchDepth     = 4
   , maxAppDepth       = 2
   , maxArgsDepth      = 1
+  , debugOut          = False
   }
 
 ------------------------------------------------------------------------

@@ -64,9 +64,13 @@ synthesize tgt fcfg cginfo =
       let foralls = foralls' ++ fs
       fills <- synthesize' ctx cgi senv1 typeOfTopLvlBnd topLvlBndr typeOfTopLvlBnd foralls state0
 
+      let outMode = debugOut (getConfig cge)
+
       return $ ErrHole loc (
         if not (null fills)
-          then text "\n Hole Fills:" $+$ pprintMany (map (coreToHs typeOfTopLvlBnd topLvlBndr . fromAnf) fills)
+          then text "\n Hole Fills:" $+$  if outMode 
+                                            then pprintManyDebug (map fromAnf fills)
+                                            else pprintMany (map (coreToHs typeOfTopLvlBnd topLvlBndr . fromAnf) fills)
           else mempty) mempty (symbol x) typeOfTopLvlBnd 
 
 
@@ -140,7 +144,7 @@ synthesizeMatch :: SpecType -> SM [CoreExpr]
 synthesizeMatch t = do
   scruts <- scrutinees <$> get
   i <- incrCase 
-  case safeIxScruts i scruts of
+  case tracepp (" scrutinees " ++ show (map fst3 scruts)) $ safeIxScruts i scruts of
     Nothing ->  return []
     Just id ->  if null scruts
                   then return []

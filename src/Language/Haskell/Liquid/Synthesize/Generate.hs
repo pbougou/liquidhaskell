@@ -79,7 +79,7 @@ withDepthFillArgs t depth cs = do
 
   filterElseM (hasType t) es $
     if depth < argsDepth
-      then  trace (" [ withDepthFillArgs ] argsDepth = " ++ show argsDepth) $ withDepthFillArgs t (depth + 1) cs
+      then  withDepthFillArgs t (depth + 1) cs
       else  return []
 
 argsFill :: ExprMemory -> [(Type, CoreExpr, Int)] -> [CoreExpr] -> SM [CoreExpr]
@@ -89,7 +89,7 @@ argsFill em0 (c:cs) es0 =
     Nothing             -> return [] 
     Just (resTy, subGs) -> 
       do  let argCands = map (withSubgoal em0) subGs
-              toGen    = foldr (\x b -> (not . null) x && b) True (tracepp (" [ argsFill ] for c = " ++ show (snd3 c) ++ " argCands ") argCands)
+              toGen    = foldr (\x b -> (not . null) x && b) True argCands
           es <- do  curExprId <- sExprId <$> get
                     if toGen then 
                       prune curExprId c argCands
@@ -124,7 +124,7 @@ fill i depth (c : cs) accExprs
                 toGen    = foldr (\x b -> (not . null) x && b) True argCands
             newExprs <- do  curExprId <- sExprId <$> get 
                             if toGen 
-                              then prune curExprId c (tracepp (" [ fill " ++ show curExprId ++ " ] For c = " ++ show (snd3 c) ++ " argCands ") argCands)
+                              then prune curExprId c argCands
                               else return []
             curExprId <- sExprId <$> get
             let nextEm = map (resTy, , curExprId + 1) newExprs

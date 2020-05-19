@@ -52,8 +52,8 @@ composeM f g x = do
 solDelim :: String
 solDelim = "*********************************************"
 
--- pprintMany :: (F.PPrint a) => [a] -> Doc
--- pprintMany xs = vcat [ F.pprint x $+$ text solDelim | x <- xs ]
+pprintManyDebug :: (F.PPrint a) => [a] -> Doc
+pprintManyDebug xs = vcat [ F.pprint x $+$ text solDelim | x <- xs ]
 
 pprintMany :: [String] -> Doc
 pprintMany xs = vcat [ text x $+$ text solDelim | x <- xs ]

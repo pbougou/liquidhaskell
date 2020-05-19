@@ -96,6 +96,7 @@ data Config = Config
   , maxMatchDepth   :: Int
   , maxAppDepth     :: Int
   , maxArgsDepth    :: Int
+  , debugOut        :: Bool 
   } deriving (Generic, Data, Typeable, Show, Eq)
 
 instance Serialize SMTSolver
