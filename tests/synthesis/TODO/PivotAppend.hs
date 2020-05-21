@@ -24,8 +24,8 @@ iElts (ICons x xs) = S.union (S.singleton x) (iElts xs)
                           iElts v == S.union (S.union (iElts xs) (iElts ys)) (S.singleton p) } 
   @-}
 pivotAppend :: a -> IList a -> IList a -> IList a
-pivotAppend = _goal
--- pivotAppend p xs ys =
---       case xs of
---         N -> ICons p ys
---         ICons x5 x6 -> ICons x5 (pivotAppend p x6 ys)
+-- pivotAppend = _goal
+pivotAppend p xs ys =
+      case xs of
+        N -> ICons p ys
+        ICons x5 x6 -> ICons x5 (pivotAppend p x6 ys)
