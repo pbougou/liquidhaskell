@@ -37,6 +37,7 @@ import           Data.List
 import           Data.Tuple.Extra
 import           CoreUtils (exprType)
 import           TyCoRep
+import           Language.Fixpoint.Types.Visitor (mapKVars)
 
 synthesize :: FilePath -> F.Config -> CGInfo -> IO [Error]
 synthesize tgt fcfg cginfo = 
@@ -167,7 +168,8 @@ matchOnExpr t (GHC.Var v, tx, c)
 matchOnExpr t (e, tx, c)
   = do  freshV <- freshVarType tx
         cge <- sCGEnv <$> get 
-        freshSpecTy <- liftCG $ consE cge e
+        freshSpecTy' <- liftCG $ consE cge e
+        let freshSpecTy = mapExprReft (const $ mapKVars (\_ -> Just PTrue)) freshSpecTy'
         addEnv freshV freshSpecTy
         es <- matchOn t (freshV, tx, c)
         return $ GHC.Let (GHC.NonRec freshV e) <$> es
