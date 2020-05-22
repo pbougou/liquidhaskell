@@ -184,6 +184,9 @@ errorExprPp _
 pprintVar :: Var -> String 
 pprintVar v = if isTyVar v then "" else " " ++ discardModName v
 
+pprintExpr :: CoreExpr -> String
+pprintExpr = pprintBody [] 0
+
 pprintBody :: [Var] -> Int -> CoreExpr -> String
 pprintBody vs i (Lam b e) 
   = pprintFormals i b e 0 vs

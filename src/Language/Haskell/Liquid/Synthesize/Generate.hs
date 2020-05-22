@@ -53,7 +53,7 @@ genTerms' i specTy =
       err <- checkError specTy 
       case err of 
         Nothing ->
-          filterElseM (hasType specTy) es0 $ 
+          filterElseM (hasType True specTy) es0 $ 
             withDepthFill i specTy 0 fnTys
         Just e -> return [e]
 
@@ -77,7 +77,7 @@ withDepthFillArgs t depth cs = do
   es <- argsFill thisEm cs []
   argsDepth <- localMaxArgsDepth
 
-  filterElseM (hasType t) es $
+  filterElseM (hasType True t) es $
     if depth < argsDepth
       then  withDepthFillArgs t (depth + 1) cs
       else  return []
@@ -104,7 +104,7 @@ withDepthFill i t depth tmp = do
   exprs <- fill i depth tmp []
   appDepth <- localMaxAppDepth
 
-  filterElseM (hasType t) exprs $ 
+  filterElseM (hasType True t) exprs $ 
       if depth < appDepth
         then do modify (\s -> s { sExprId = sExprId s + 1 })
                 withDepthFill i t (depth + 1) tmp
@@ -156,19 +156,24 @@ findFeasibles d cs = (fs, ixs)
   where fs  = isFeasible d cs
         ixs = [i | (i, f) <- zip [0..] fs, not (null f)]
 
-toExpr :: [Int] ->                    --  Produced from @isFeasible@.
-                                      --   Assumed in increasing order.
-          [(GHC.CoreExpr, Int)] ->    --  The candidate expressions.
-          ([(GHC.CoreExpr, Int)],     --  Expressions from 2nd argument.
-           [(GHC.CoreExpr, Int)])     --  The rest of the expressions
-toExpr ixs args = ( [ args !! i | (ix, i) <- is, ix == i ], 
-                    [ args !! i | (ix, i) <- is, ix /= i ])
-    where is = zip [0..] ixs
+toExpr :: Int 
+          -> [Int]                      --  Produced from @isFeasible@.
+                                        --   Assumed in increasing order.
+          -> [(GHC.CoreExpr, Int)]      --  The candidate expressions.
+          -> ([(GHC.CoreExpr, Int)], 
+              [(GHC.CoreExpr, Int)])
+          -> ([(GHC.CoreExpr, Int)],    --  Expressions from 2nd argument.
+              [(GHC.CoreExpr, Int)])    --  The rest of the expressions
+toExpr _ _   [ ]    x           = x
+toExpr i ixs (a:as) (cur, next) = 
+  case find (== i) ixs of 
+    Nothing -> toExpr (i+1) ixs as (cur, a:next)
+    Just _  -> toExpr (i+1) ixs as (a:cur, next)
 
 fixCands :: Int -> [Int] -> [[(CoreExpr, Int)]] -> ([[(CoreExpr, Int)]], [[(CoreExpr, Int)]])
 fixCands i ixs args 
   = let cs = args !! i
-        (cur, next)    = toExpr ixs cs
+        (cur, next)    = toExpr 0 ixs cs ([], [])
         (args0, args1) = (replace (i+1) cur args, replace (i+1) next args)
     in  (args0, args1)
 
@@ -190,10 +195,16 @@ repeatFix (i:is) ixs toFill args es
         repeatFix is ixs toFill args1 es2
 
 prune :: Depth -> (Type, CoreExpr, Int) -> [[(CoreExpr, Int)]] -> SM [CoreExpr]
-prune d toFill args 
-  = do  let (ixs, is) = findFeasibles d args 
+prune d toFill args' 
+ =  do  let args = fixArgsDepth d args'
+            (ixs, is) = findFeasibles d args 
         repeatFix is ixs toFill args []
 
+fixArgDepth :: Depth -> [(CoreExpr, Int)] -> [(CoreExpr, Int)]
+fixArgDepth d args = map (\(e, i) -> if i > d then (e, d) else (e, i)) args
+
+fixArgsDepth :: Depth -> [[(CoreExpr, Int)]] -> [[(CoreExpr, Int)]]
+fixArgsDepth d args = map (fixArgDepth d) args
 
 ----------------------------------------------------------------------------
 --  | Term generation: Perform type and term application for functions. | --

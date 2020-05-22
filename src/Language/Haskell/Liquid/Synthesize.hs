@@ -145,7 +145,7 @@ synthesizeMatch :: SpecType -> SM [CoreExpr]
 synthesizeMatch t = do
   scruts <- scrutinees <$> get
   i <- incrCase 
-  case tracepp (" scrutinees " ++ show (map fst3 scruts)) $ safeIxScruts i scruts of
+  case safeIxScruts i scruts of
     Nothing ->  return []
     Just id ->  if null scruts
                   then return []
