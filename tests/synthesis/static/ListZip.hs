@@ -8,8 +8,8 @@ import Language.Haskell.Liquid.Synthesize.Error
 zip' :: [a] -> [b] -> [(a, b)]
 zip' x_S0 x_S1 =
     case x_S0 of
-        [] -> [], b)
-        (:) x_Sl x_Sm ->
+        [] -> []
+        (:) x_Sn x_So ->
             case x_S1 of
                 [] -> error " Dead code! "
-                (:) x_S14 x_S15 -> (:), b) (x_Sl, x_S14) (zip' x_Sm x_S15)
+                (:) x_S16 x_S17 -> (:) (x_Sn, x_S16) (zip' x_So x_S17)
