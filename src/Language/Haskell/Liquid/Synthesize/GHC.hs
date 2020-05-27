@@ -218,7 +218,20 @@ fixApplication e =
   let ws' = words (replaceNewLine e)
       ws = handleCommas ws'
       cleanWs = rmTypeAppl ws
-  in  unwords (fixCommas $ fixParen (map rmModName cleanWs))
+      ws0 = fixCommas $ fixParen (map rmModName cleanWs)
+      ws1 = fixMore ws0
+  in  unwords (trace (" [ ws0 ] " ++ show ws0) ws1) 
+
+fixMore :: [String] -> [String]
+fixMore [] 
+  = []
+fixMore [x]
+  = [x]
+fixMore (w0:w1:ws) 
+  = if  last w0 == ',' && (init w0 == ":" || init w0 == "[]") && 
+        (init w1 /= "[]" && init w1 /= ":") && last w1 == ')'
+      then init w0 : fixMore ws
+      else w0 : fixMore (w1:ws)
 
 handleCommas :: [String] -> [String]
 handleCommas [] = []
