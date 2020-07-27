@@ -46,6 +46,10 @@ genTerms' i specTy =
         Nothing -> modify (\s -> s { sGoalTys = (toType specTy) : sGoalTys s })
         Just _  -> return ()
       fixEMem specTy 
+
+      -- Remove function from term generation 
+      fix <- sFix <$> get 
+
       fnTys <- functionCands (toType specTy)
       es    <- withTypeEs specTy 
       es0   <- structuralCheck es
@@ -54,8 +58,12 @@ genTerms' i specTy =
       case err of 
         Nothing ->
           filterElseM (hasType True specTy) es0 $ 
-            withDepthFill i specTy 0 fnTys
+            withDepthFill i specTy 0 (filter (\(_, x, _) -> isFix fix x) fnTys)
         Just e -> return [e]
+
+isFix :: Var -> CoreExpr -> Bool
+isFix v (GHC.Var v0) = v0 /= v
+isFix _ _            = True
 
 genArgs :: SpecType -> SM [CoreExpr]
 genArgs t =

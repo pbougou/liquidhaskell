@@ -38,6 +38,7 @@ import           Data.Tuple.Extra
 import           CoreUtils (exprType)
 import           TyCoRep
 import           Language.Fixpoint.Types.Visitor (mapKVars)
+import           TysWiredIn
 
 synthesize :: FilePath -> F.Config -> CGInfo -> IO [Error]
 synthesize tgt fcfg cginfo = 
@@ -52,18 +53,18 @@ synthesize tgt fcfg cginfo =
           fromREnv' = filterREnv (reLocal env)
           fromREnv'' = M.fromList (filter (rmClassVars . toType . snd) (M.toList fromREnv'))
           rmClassVars t = case t of { TyConApp c _ -> not . isClassTyCon $ c; _ -> True }
-          fromREnv  = M.fromList (rmMeasures measures (M.toList fromREnv''))
+          fromREnv  = M.fromList (rmMeasures (measures ++ reflects) (M.toList fromREnv''))
           isForall t = case t of { ForAllTy{} -> True; _ -> False}
           rEnvForalls = M.fromList (filter (isForall . toType . snd) (M.toList fromREnv))
           fs = map (snd . snd) $ M.toList (symbolToVar coreProgram topLvlBndr rEnvForalls)
 
           ssenv0 = symbolToVar coreProgram topLvlBndr fromREnv
           (senv1, foralls') = initSSEnv typeOfTopLvlBnd cginfo ssenv0
-      
+          reflects = map symbol ((gsReflects . gsRefl . giSpec . ghcI) cginfo)
       ctx <- SMT.makeContext fcfg tgt
       state0 <- initState ctx fcfg cgi cge env topLvlBndr (reverse uniVars) M.empty
       let foralls = foralls' ++ fs
-      fills <- synthesize' ctx cgi senv1 typeOfTopLvlBnd topLvlBndr typeOfTopLvlBnd foralls state0
+      fills <- synthesize' ctx cgi (trace (" [ SEnv ] " ++ show (map (snd .snd) (M.toList ssenv0))) senv1) typeOfTopLvlBnd topLvlBndr typeOfTopLvlBnd (tracepp " ForAlls " foralls) state0
 
       let outMode = debugOut (getConfig cge)
 
@@ -142,14 +143,19 @@ synthesizeBasic t = do
               else return es
 
 synthesizeMatch :: SpecType -> SM [CoreExpr]
-synthesizeMatch t = do
-  scruts <- scrutinees <$> get
+synthesizeMatch t = trace (" [ synthesizeMatch ] t = " ++ show t) $ do
+  scruts' <- scrutinees <$> get
   i <- incrCase 
-  case safeIxScruts i scruts of
+  let (x, y)   = (filter ((== (toType t)) . snd3) scruts', filter ((/= (toType t)) . snd3) scruts') 
+      (y1, y2) = (filter ((== 1) . tyConFamilySize . thd3) y, filter ((/= 1) . tyConFamilySize . thd3) y)
+      (y3, y4) = (filter ((== boolTyCon) . thd3) y2, filter ((/= boolTyCon) . thd3) y2)
+      scruts = x ++ y1 ++ y3 ++ y4
+  case safeIxScruts i (tracepp (" Scrutinees " ++ show (map (tyConDataCons . thd3) scruts) ) scruts) of
     Nothing ->  return []
     Just id ->  if null scruts
                   then return []
-                  else withIncrDepth (matchOnExpr t (scruts !! id))
+                  else  let scrut = scruts !! id 
+                        in  withIncrDepth (matchOnExpr t (tracepp " [ Current ] " scrut))
 
 synthesizeScrut :: [Var] -> SM [(CoreExpr, Type, TyCon)]
 synthesizeScrut vs = do
