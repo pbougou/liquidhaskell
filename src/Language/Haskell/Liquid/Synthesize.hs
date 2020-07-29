@@ -61,10 +61,13 @@ synthesize tgt fcfg cginfo =
           ssenv0 = symbolToVar coreProgram topLvlBndr fromREnv
           (senv1, foralls') = initSSEnv typeOfTopLvlBnd cginfo ssenv0
           reflects = map symbol ((gsReflects . gsRefl . giSpec . ghcI) cginfo)
+
+          cons = map ((map dataConWorkId) . tyConDataCons . fst) $ M.toList ((tcmTyRTy . tyConInfo) cginfo)
+          tys = map (map (showTy . varType)) cons
       ctx <- SMT.makeContext fcfg tgt
       state0 <- initState ctx fcfg cgi cge env topLvlBndr (reverse uniVars) M.empty
       let foralls = foralls' ++ fs
-      fills <- synthesize' ctx cgi senv1 typeOfTopLvlBnd topLvlBndr typeOfTopLvlBnd foralls state0
+      fills <- synthesize' ctx cgi senv1 typeOfTopLvlBnd topLvlBndr typeOfTopLvlBnd foralls state0 (concat cons)
 
       let outMode = debugOut (getConfig cge)
 
@@ -76,10 +79,16 @@ synthesize tgt fcfg cginfo =
           else mempty) mempty (symbol x) typeOfTopLvlBnd 
 
 
-synthesize' :: SMT.Context -> CGInfo -> SSEnv -> SpecType ->  Var -> SpecType -> [Var] -> SState -> IO [CoreExpr]
-synthesize' ctx cgi senv tx xtop ttop foralls st2
- = evalSM (go tx) ctx senv st2
+synthesize' :: SMT.Context -> CGInfo -> SSEnv -> SpecType ->  Var -> SpecType -> [Var] -> SState -> [Var] -> IO [CoreExpr]
+synthesize' ctx cgi senv tx xtop ttop foralls st2 cons
+ = evalSM (fixConstructors cons >> go tx) ctx senv st2
   where 
+    fixConstructors :: [Var] -> SM ()
+    fixConstructors cons = 
+      do  cge <- sCGEnv <$> get
+          ts <- liftCG $ mapM (consE cge) (map GHC.Var cons)
+          mapM_ (\(v, t) -> addEnv v t) (zip cons ts)
+          -- trace (" CONSTRUCTORS 2 " ++ show res) $ return undefined
 
     go :: SpecType -> SM [CoreExpr]
 
