@@ -130,7 +130,3 @@ adversarySound1 = _g
 --                     case b of
 --                         True  -> ShipRange (IntRange (max' fifty l) u) loc
 --                         False -> ShipRange (IntRange l (min' fiftyOne u)) loc
-
--- adversarySound1 x_S0 x_S1 x_S2 = 
---     case x_S0 of 
---         Ship x_SE x_SF -> adversarySound1 (Ship x_SE x_SF) x_S1 x_S2
