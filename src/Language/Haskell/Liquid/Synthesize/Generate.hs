@@ -58,7 +58,7 @@ genTerms' i specTy =
       case err of 
         Nothing ->
           filterElseM (hasType True specTy) es0 $ 
-            withDepthFill i specTy 0 (filter (\(_, x, _) -> isFix fix x) fnTys)
+            withDepthFill i specTy 0 (filter (\(_, x, _) -> isFix fix x) (trace (" Function Candidates " ++ show (map snd3 fnTys)) fnTys))
         Just e -> return [e]
 
 isFix :: Var -> CoreExpr -> Bool
@@ -72,7 +72,7 @@ genArgs t =
         Nothing -> do modify (\s -> s { sGoalTys = toType t : sGoalTys s }) 
                       fixEMem t 
                       fnTys <- functionCands (toType t)
-                      es <- withDepthFillArgs t 0 fnTys
+                      es <- withDepthFillArgs t 0 (trace (" Function Candidates " ++ show (map snd3 fnTys)) fnTys)
                       if null es
                         then  return []
                         else  do  -- modify (\s -> s {sExprId = sExprId s + 1})

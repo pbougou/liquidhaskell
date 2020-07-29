@@ -64,7 +64,7 @@ synthesize tgt fcfg cginfo =
       ctx <- SMT.makeContext fcfg tgt
       state0 <- initState ctx fcfg cgi cge env topLvlBndr (reverse uniVars) M.empty
       let foralls = foralls' ++ fs
-      fills <- synthesize' ctx cgi (trace (" [ SEnv ] " ++ show (map (snd .snd) (M.toList ssenv0))) senv1) typeOfTopLvlBnd topLvlBndr typeOfTopLvlBnd (tracepp " ForAlls " foralls) state0
+      fills <- synthesize' ctx cgi senv1 typeOfTopLvlBnd topLvlBndr typeOfTopLvlBnd foralls state0
 
       let outMode = debugOut (getConfig cge)
 
@@ -138,19 +138,34 @@ synthesizeBasic t = do
               else  modify (\s -> s { sUGoalTy = Just ts } )
   modify (\s -> s { sGoalTys = [] })
   fixEMem t
-  es <- genTerms t
-  if null es  then synthesizeMatch t
-              else return es
+  fixScrutinees t
+  -- HACK: If current scrutinee is boolean, case split on that first...
+  scs <- scrutinees <$> get
+  i <- caseIdx <$> get
+  if snd3 (scs !! i) == boolTy 
+    then synthesizeMatch t
+    else  do  es <- genTerms t
+              if null es  then synthesizeMatch t
+                          else return es
 
-synthesizeMatch :: SpecType -> SM [CoreExpr]
-synthesizeMatch t = trace (" [ synthesizeMatch ] t = " ++ show t) $ do
+fixScrutinees :: SpecType -> SM ()
+fixScrutinees t = do 
   scruts' <- scrutinees <$> get
-  i <- incrCase 
   let (x, y)   = (filter ((== (toType t)) . snd3) scruts', filter ((/= (toType t)) . snd3) scruts') 
       (y1, y2) = (filter ((== 1) . tyConFamilySize . thd3) y, filter ((/= 1) . tyConFamilySize . thd3) y)
-      (y3, y4) = (filter ((== boolTyCon) . thd3) y2, filter ((/= boolTyCon) . thd3) y2)
-      scruts = x ++ y1 ++ y3 ++ y4
-  case safeIxScruts i (tracepp (" Scrutinees " ++ show (map (tyConDataCons . thd3) scruts) ) scruts) of
+      (y3, y4) = (filter ((== boolTyCon) . thd3) y2, filter ((/= boolTyCon) . thd3) (res1 y1 ++ y2))
+      tsDataCons' x = map ((map (snd . fromJust . subgoals . varType . dataConWorkId)) . tyConDataCons . thd3) x
+      tsDataCons x = map (\x -> if length x == 1 then head x else error " Not singleton ") (tsDataCons' x)
+      res0 l = map snd $ filter (\(x, _) -> foldr (\x0 y -> x0 == intTy && y) True x) (zip (tsDataCons l) l)
+      res1 l = map snd $ filter (\(x, _) -> foldr (\x0 y -> x0 /= intTy || y) False x) (zip (tsDataCons l) l)
+      scruts = x ++ (res0 y1) ++ y3 ++ y4
+  modify (\s -> s { scrutinees = scruts })  
+
+synthesizeMatch :: SpecType -> SM [CoreExpr]
+synthesizeMatch t = do
+  scruts <- scrutinees <$> get
+  i <- incrCase 
+  case safeIxScruts i scruts of
     Nothing ->  return []
     Just id ->  if null scruts
                   then return []
