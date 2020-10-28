@@ -25,6 +25,18 @@ import           TysWiredIn
 
 import           Data.List
 import           Data.List.Split
+import           DataCon
+import           Data.Maybe
+
+containsNumeric :: TyCon -> Bool
+containsNumeric c = 
+  if isAlgTyCon c || isTupleTyCon c
+    then  if tyConFamilySize c == 1
+            then  let x = concatMap (snd . fromJust . subgoals . varType . dataConWorkId) (tyConDataCons c)
+                      b = foldr (\x0 y0 -> x0 == intTy && y0) True x
+                  in  {- trace (" needIt " ++ show (map showTy x) ++ "\nRes " ++ show b) -} b
+            else False
+    else  False
 
 instance Default Type where
     def = TyVarTy alphaTyVar 

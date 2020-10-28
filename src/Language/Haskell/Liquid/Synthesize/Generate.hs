@@ -25,6 +25,8 @@ import           Data.Tuple.Extra
 import           Debug.Trace
 import           Language.Fixpoint.Types.PrettyPrint (tracepp)
 import           TyCoRep
+import           TyCon 
+import           Language.Haskell.Liquid.Constraint.Generate
 
 -- Generate terms that have type t: This changes the @ExprMemory@ in @SM@ state.
 -- Return expressions type checked against type @specTy@.
@@ -38,27 +40,51 @@ data SearchMode
   | ResultMode        -- ^ searching for the hole fill 
   deriving (Eq, Show) 
 
+invokeSmt :: SpecType -> SM [CoreExpr]
+invokeSmt t = do 
+  thisEm <- sExprMem <$> get 
+  let es = map snd3 thisEm 
+  fnTys <- functionCands (toType t)
+  trace (" [ invokeSmt ] Not implemented yet. SpecType t = " ++ show t ++ 
+         "\nExpressions: " ++ show es ++
+         "\nFunctions " ++ show (map snd3 fnTys)) $
+    return []
+
+toTyCon :: SpecType -> Maybe TyCon 
+toTyCon t = 
+  case toType t of 
+    TyConApp c _ -> Just c
+    _            -> Nothing 
+
+approved :: SpecType -> Bool
+approved t =
+  case toTyCon t of 
+    Nothing -> False
+    Just c  -> containsNumeric c
+
 genTerms' :: SearchMode -> SpecType -> SM [CoreExpr] 
-genTerms' i specTy = 
-  do  goalTys <- sGoalTys <$> get
-      case find (== toType specTy) goalTys of 
-        Nothing -> modify (\s -> s { sGoalTys = (toType specTy) : sGoalTys s })
-        Just _  -> return ()
-      fixEMem specTy 
+genTerms' i specTy =
+  if approved specTy 
+    then invokeSmt specTy 
+    else  do  goalTys <- sGoalTys <$> get
+              case find (== toType specTy) goalTys of 
+                Nothing -> modify (\s -> s { sGoalTys = (toType specTy) : sGoalTys s })
+                Just _  -> return ()
+              fixEMem specTy 
 
-      -- Remove function from term generation 
-      fix <- sFix <$> get 
+              -- Remove function from term generation 
+              fix <- sFix <$> get 
 
-      fnTys <- functionCands (toType specTy)
-      es    <- withTypeEs specTy 
-      es0   <- structuralCheck es
+              fnTys <- functionCands (toType specTy)
+              es    <- withTypeEs specTy 
+              es0   <- structuralCheck es
 
-      err <- checkError specTy 
-      case err of 
-        Nothing ->
-          filterElseM (hasType True specTy) es0 $ 
-            withDepthFill i specTy 0 (filter (\(_, x, _) -> isFix fix x) (trace (" Function Candidates " ++ show (map snd3 fnTys)) fnTys))
-        Just e -> return [e]
+              err <- checkError specTy 
+              case err of 
+                Nothing ->
+                  filterElseM (hasType True specTy) es0 $ 
+                    withDepthFill i specTy 0 (filter (\(_, x, _) -> isFix fix x) (trace (" Function Candidates " ++ show (map snd3 fnTys)) fnTys))
+                Just e -> return [e]
 
 isFix :: Var -> CoreExpr -> Bool
 isFix v (GHC.Var v0) = v0 /= v
@@ -66,17 +92,19 @@ isFix _ _            = True
 
 genArgs :: SpecType -> SM [CoreExpr]
 genArgs t =
-  do  goalTys <- sGoalTys <$> get
-      case find (== toType t) goalTys of 
-        Nothing -> do modify (\s -> s { sGoalTys = toType t : sGoalTys s }) 
-                      fixEMem t 
-                      fnTys <- functionCands (toType t)
-                      es <- withDepthFillArgs t 0 (trace (" Function Candidates " ++ show (map snd3 fnTys)) fnTys)
-                      if null es
-                        then  return []
-                        else  do  -- modify (\s -> s {sExprId = sExprId s + 1})
-                                  return es
-        Just _  -> return []
+  if approved t 
+    then invokeSmt t 
+    else  do  goalTys <- sGoalTys <$> get
+              case find (== toType t) goalTys of 
+                Nothing -> do modify (\s -> s { sGoalTys = toType t : sGoalTys s }) 
+                              fixEMem t 
+                              fnTys <- functionCands (toType t)
+                              es <- withDepthFillArgs t 0 (trace (" Function Candidates " ++ show (map snd3 fnTys)) fnTys)
+                              if null es
+                                then  return []
+                                else  do  -- modify (\s -> s {sExprId = sExprId s + 1})
+                                          return es
+                Just _  -> return []
 
 withDepthFillArgs :: SpecType -> Int -> [(Type, CoreExpr, Int)] -> SM [CoreExpr]
 withDepthFillArgs t depth cs = do
