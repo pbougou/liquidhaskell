@@ -113,14 +113,14 @@ min' :: Int -> Int -> Int
 min' a b = if a <= b then a else b
 
 
-{-@ adversarySound1
+{-@ adversary
  :: secret : Ship
  -> {prior : ShipRange | betweenShip secret prior}
- -> response : Bool
- -> {post : ShipRange | (betweenShip secret post => response == atLeast secret) && subsetShip post prior }
+ -> {response : Bool | response == atLeast secret}
+ -> {post : ShipRange | betweenShip secret post && subsetShip post prior }
 @-}
-adversarySound1 :: Ship -> ShipRange -> Bool -> ShipRange
-adversarySound1 = _g
+adversary :: Ship -> ShipRange -> Bool -> ShipRange
+adversary = _g
 
 -- adversarySound1 secret shipRange b = 
 --     case shipRange of

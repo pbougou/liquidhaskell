@@ -56,6 +56,11 @@ safeFromJust :: String -> Maybe t -> t
 safeFromJust _  (Just x) = x
 safeFromJust err _       = errorstar err
 
+safeFromLeft :: String -> Either a b -> a 
+safeFromLeft _   (Left l) = l 
+safeFromLeft err _        = errorstar err 
+
+
 takeLast :: Int -> [a] -> [a]
 takeLast n xs = drop (m - n) xs
   where
@@ -295,8 +300,8 @@ tryIgnore s a =
     return ()
 
 
-condNull :: Bool -> [a] -> [a]
-condNull c xs = if c then xs else []
+condNull :: Monoid m => Bool -> m -> m
+condNull c xs = if c then xs else mempty
 
 firstJust :: (a -> Maybe b) -> [a] -> Maybe b
 firstJust f xs = listToMaybe $ mapMaybe f xs

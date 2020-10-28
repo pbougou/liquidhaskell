@@ -20,9 +20,6 @@ module Language.Haskell.Liquid.Bare (
   -- * Loading and Saving lifted specs from/to disk
   , loadLiftedSpec
   , saveLiftedSpec
-
-  -- * Internal utilities
-  , checkThrow
   ) where
 
 import           Prelude                                    hiding (error)
@@ -35,15 +32,17 @@ import qualified Data.List                                  as L
 import qualified Data.HashMap.Strict                        as M
 import qualified Data.HashSet                               as S
 import           Text.PrettyPrint.HughesPJ                  hiding (first, (<>)) -- (text, (<+>))
+import           System.FilePath                            (dropExtension)
 import           System.Directory                           (doesFileExist)
 import           System.Console.CmdArgs.Verbosity           (whenLoud)
-import           Language.Fixpoint.Utils.Files             
+import           Language.Fixpoint.Utils.Files              as Files
 import           Language.Fixpoint.Misc                     as Misc 
 import           Language.Fixpoint.Types                    hiding (dcFields, DataDecl, Error, panic)
 import qualified Language.Fixpoint.Types                    as F
 import qualified Language.Haskell.Liquid.Misc               as Misc -- (nubHashOn)
 import qualified Language.Haskell.Liquid.GHC.Misc           as GM
 import qualified Language.Haskell.Liquid.GHC.API            as Ghc 
+import           Language.Haskell.Liquid.GHC.Types          (StableName)
 import           Language.Haskell.Liquid.Types
 import           Language.Haskell.Liquid.WiredIn
 import qualified Language.Haskell.Liquid.Measure            as Ms
@@ -103,68 +102,86 @@ functions like 'liquid' or 'liquidOne' to verify our program is correct, the lat
 to disk so that we can retrieve it later without having to re-check the relevant Haskell file.
 -}
 
--- | 'makeTargetSpec' constructs the 'TargetSpec' and then validates it. Upon success, the 'TargetSpec' 
--- and the 'LiftedSpec' are returned.
+-- | 'makeTargetSpec' constructs the 'TargetSpec' and then validates it. Upon success, the 'TargetSpec'
+-- and the 'LiftedSpec' are returned. We perform error checking in \"two phases\": during the first phase,
+-- we check for errors and warnings in the input 'BareSpec' and the dependencies. During this phase we ideally
+-- want to short-circuit in case the validation failure is found in one of the dependencies (to avoid
+-- printing potentially endless failures).
+-- The second phase involves creating the 'TargetSpec', and returning either the full list of diagnostics
+-- (errors and warnings) in case things went wrong, or the final 'TargetSpec' and 'LiftedSpec' together
+-- with a list of 'Warning's, which shouldn't abort the compilation (modulo explicit request from the user,
+-- to treat warnings and errors).
 makeTargetSpec :: Config
                -> LogicMap
                -> TargetSrc
                -> BareSpec
                -> TargetDependencies
-               -> Either [Error] (TargetSpec, LiftedSpec)
+               -> Either Diagnostics ([Warning], TargetSpec, LiftedSpec)
 makeTargetSpec cfg lmap targetSrc bareSpec dependencies = do
-  -- Check that our input 'BareSpec' doesn't contain duplicates.
-  validatedBareSpec <- Bare.checkBareSpec (giTargetMod targetSrc) (review bareSpecIso bareSpec)
-  ghcSpec           <- makeGhcSpec cfg (review targetSrcIso targetSrc) lmap (allSpecs validatedBareSpec)
-  pure $ view targetSpecGetter ghcSpec
+  let depsDiagnostics     = mapM (uncurry Bare.checkBareSpec) legacyDependencies
+  let bareSpecDiagnostics = Bare.checkBareSpec (giTargetMod targetSrc) legacyBareSpec
+  case depsDiagnostics >> bareSpecDiagnostics of
+   Left d | noErrors d -> secondPhase (allWarnings d)
+   Left d              -> Left  d
+   Right ()            -> secondPhase mempty
   where
+    secondPhase :: [Warning] -> Either Diagnostics ([Warning], TargetSpec, LiftedSpec)
+    secondPhase phaseOneWarns = do
+      (warns, ghcSpec) <- makeGhcSpec cfg (review targetSrcIso targetSrc) lmap (allSpecs legacyBareSpec)
+      let (targetSpec, liftedSpec) = view targetSpecGetter ghcSpec
+      pure (phaseOneWarns <> warns, targetSpec, liftedSpec)
+
     toLegacyDep :: (StableModule, LiftedSpec) -> (ModName, Ms.BareSpec)
     toLegacyDep (sm, ls) = (ModName SrcImport (Ghc.moduleName . unStableModule $ sm), unsafeFromLiftedSpec ls)
 
     toLegacyTarget :: Ms.BareSpec -> (ModName, Ms.BareSpec)
     toLegacyTarget validatedSpec = (giTargetMod targetSrc, validatedSpec)
 
+    legacyDependencies :: [(ModName, Ms.BareSpec)]
+    legacyDependencies = map toLegacyDep . M.toList . getDependencies $ dependencies
+
     allSpecs :: Ms.BareSpec -> [(ModName, Ms.BareSpec)]
-    allSpecs validSpec = 
-      toLegacyTarget validSpec : (map toLegacyDep . M.toList . getDependencies $ dependencies)
+    allSpecs validSpec = toLegacyTarget validSpec : legacyDependencies
+
+    legacyBareSpec :: Spec LocBareType F.LocSymbol
+    legacyBareSpec = review bareSpecIso bareSpec
 
 -------------------------------------------------------------------------------------
--- | @makeGhcSpec@ invokes @makeGhcSpec0@ to construct the @GhcSpec@ and then 
---   validates it using @checkGhcSpec@. 
+-- | @makeGhcSpec@ invokes @makeGhcSpec0@ to construct the @GhcSpec@ and then
+--   validates it using @checkGhcSpec@.
 -------------------------------------------------------------------------------------
-makeGhcSpec :: Config 
-            -> GhcSrc 
-            -> LogicMap 
-            -> [(ModName, Ms.BareSpec)] 
-            -> Either [Error] GhcSpec
+makeGhcSpec :: Config
+            -> GhcSrc
+            -> LogicMap
+            -> [(ModName, Ms.BareSpec)]
+            -> Either Diagnostics ([Warning], GhcSpec)
 -------------------------------------------------------------------------------------
-makeGhcSpec cfg src lmap mspecs0  = do
-  _validTargetSpec <- Bare.checkTargetSpec (map snd mspecs) 
-                                           (view targetSrcIso src)
-                                           renv 
-                                           cbs 
-                                           (fst . view targetSpecGetter $ sp)
-  pure sp
-  where 
-    mspecs =  [ (m, checkThrow $ Bare.checkBareSpec m sp) | (m, sp) <- mspecs0, isTarget m ] 
-           ++ [ (m, sp) | (m, sp) <- mspecs0, not (isTarget m)]
-    sp     = makeGhcSpec0 cfg src lmap mspecs 
-    renv   = ghcSpecEnv sp 
-    cbs    = _giCbs src
-
-checkThrow :: Ex.Exception e => Either e c -> c
-checkThrow = either Ex.throw id 
+makeGhcSpec cfg src lmap validatedSpecs = do
+  case diagnostics of
+    Left e | noErrors e -> pure (allWarnings e, sp)
+    Left e              -> Left e
+    Right ()            -> pure (mempty, sp)
+  where
+    diagnostics = Bare.checkTargetSpec (map snd validatedSpecs)
+                                       (view targetSrcIso src)
+                                       renv
+                                       cbs
+                                       (fst . view targetSpecGetter $ sp)
+    sp          = makeGhcSpec0 cfg src lmap validatedSpecs
+    renv        = ghcSpecEnv sp
+    cbs         = _giCbs src
 
 ghcSpecEnv :: GhcSpec -> SEnv SortedReft
 ghcSpecEnv sp = fromListSEnv binds
   where
     emb       = gsTcEmbeds (_gsName sp)
     binds     = concat 
-                 [ [(x,        rSort t) | (x, Loc _ _ t) <- gsMeas     (_gsData sp)]
-                 , [(symbol v, rSort t) | (v, Loc _ _ t) <- gsCtors    (_gsData sp)]
-                 , [(symbol v, vSort v) | v              <- gsReflects (_gsRefl sp)]
-                 , [(x,        vSort v) | (x, v)         <- gsFreeSyms (_gsName sp), Ghc.isConLikeId v ]
-                 , [(x, RR s mempty)    | (x, s)         <- wiredSortedSyms       ]
-                 , [(x, RR s mempty)    | (x, s)         <- _gsImps sp       ]
+                 [ [(x,        rSort t) | (x, Loc _ _ t)  <- gsMeas     (_gsData sp)]
+                 , [(symbol v, rSort t) | (v, Loc _ _ t)  <- gsCtors    (_gsData sp)]
+                 , [(symbol v, vSort v) | v               <- gsReflects (_gsRefl sp)]
+                 , [(x,        vSort v) | (x, v)          <- gsFreeSyms (_gsName sp), Ghc.isConLikeId v ]
+                 , [(x, RR s mempty)    | (x, s)          <- wiredSortedSyms       ]
+                 , [(x, RR s mempty)    | (x, s)          <- _gsImps sp       ]
                  ]
     vSort     = Bare.varSortedReft emb
     rSort     = rTypeSortedReft    emb
@@ -182,7 +199,7 @@ makeGhcSpec0 :: Config -> GhcSrc ->  LogicMap -> [(ModName, Ms.BareSpec)] -> Ghc
 makeGhcSpec0 cfg src lmap mspecs = SP 
   { _gsConfig = cfg 
   , _gsImps   = makeImports mspecs
-  , _gsSig    = addReflSigs refl sig 
+  , _gsSig    = addReflSigs env name rtEnv refl sig
   , _gsRefl   = refl 
   , _gsLaws   = laws 
   , _gsData   = sData 
@@ -190,13 +207,28 @@ makeGhcSpec0 cfg src lmap mspecs = SP
   , _gsName   = makeSpecName env     tycEnv measEnv   name 
   , _gsVars   = makeSpecVars cfg src mySpec env measEnv
   , _gsTerm   = makeSpecTerm cfg     mySpec env       name    
-  , _gsLSpec  = makeLiftedSpec   src env refl sData sig qual myRTE lSpec1 {
-                   impSigs   = makeImports mspecs,
-                   expSigs   = [ (F.symbol v, F.sr_sort $ Bare.varSortedReft embs v) | v <- gsReflects refl ],
-                   dataDecls = dataDecls mySpec2 
-                   } 
+  , _gsLSpec  = finalLiftedSpec
+              { impSigs   = makeImports mspecs
+              , expSigs   = [ (F.symbol v, F.sr_sort $ Bare.varSortedReft embs v) | v <- gsReflects refl ]
+              , dataDecls = dataDecls mySpec2
+              , measures  = Ms.measures mySpec
+                -- We want to export measures in a 'LiftedSpec', especially if they are
+                -- required to check termination of some 'liftedSigs' we export. Due to the fact
+                -- that 'lSpec1' doesn't contain the measures that we compute via 'makeHaskellMeasures',
+                -- we take them from 'mySpec', which has those.
+              , asmSigs = Ms.asmSigs finalLiftedSpec ++ Ms.asmSigs mySpec
+                -- Export all the assumptions (not just the ones created out of reflection) in
+                -- a 'LiftedSpec'.
+              , imeasures = Ms.imeasures finalLiftedSpec ++ Ms.imeasures mySpec
+                -- Preserve user-defined 'imeasures'.
+              , dvariance = Ms.dvariance finalLiftedSpec ++ Ms.dvariance mySpec
+                -- Preserve user-defined 'dvariance'.
+              , rinstance = Ms.rinstance finalLiftedSpec ++ Ms.rinstance mySpec
+                -- Preserve rinstances.
+              }
   }
   where
+    finalLiftedSpec = makeLiftedSpec src env refl sData sig qual myRTE lSpec1
     -- build up spec components 
     myRTE    = myRTEnv       src env sigEnv rtEnv  
     qual     = makeSpecQual cfg env tycEnv measEnv rtEnv specs 
@@ -284,6 +316,14 @@ makeLiftedSpec0 cfg src embs lmap mySpec = mempty
   { Ms.ealiases  = lmapEAlias . snd <$> Bare.makeHaskellInlines src embs lmap mySpec 
   , Ms.reflects  = Ms.reflects mySpec
   , Ms.dataDecls = Bare.makeHaskellDataDecls cfg name mySpec tcs  
+  , Ms.embeds    = Ms.embeds mySpec
+  -- We do want 'embeds' to survive and to be present into the final 'LiftedSpec'. The
+  -- caveat is to decide which format is more appropriate. We obviously cannot store
+  -- them as a 'TCEmb TyCon' as serialising a 'TyCon' would be fairly exponsive. This
+  -- needs more thinking.
+  , Ms.cmeasures = Ms.cmeasures mySpec
+  -- We do want 'cmeasures' to survive and to be present into the final 'LiftedSpec'. The
+  -- caveat is to decide which format is more appropriate. This needs more thinking.
   }
   where 
     tcs          = uniqNub (_gsTcs src ++ refTcs)
@@ -522,10 +562,23 @@ getReflects  = fmap val . S.toList . S.unions . fmap (names . snd) . M.toList
 -- | @updateReflSpecSig@ uses the information about reflected functions to update the 
 --   "assumed" signatures. 
 ------------------------------------------------------------------------------------------
-addReflSigs :: GhcSpecRefl -> GhcSpecSig -> GhcSpecSig
+addReflSigs :: Bare.Env -> ModName -> BareRTEnv -> GhcSpecRefl -> GhcSpecSig -> GhcSpecSig
 ------------------------------------------------------------------------------------------
-addReflSigs refl sig = sig { gsRefSigs = reflSigs, gsAsmSigs = wreflSigs ++ filter notReflected (gsAsmSigs sig) }
-  where 
+addReflSigs env name rtEnv refl sig =
+  sig { gsRefSigs = map expandReflectedSignature reflSigs
+      , gsAsmSigs = wreflSigs ++ filter notReflected (gsAsmSigs sig)
+      }
+  where
+
+    -- See T1738. We need to expand and qualify any reflected signature /here/, after any
+    -- relevant binder has been detected and \"promoted\". The problem stems from the fact that any input
+    -- 'BareSpec' will have a 'reflects' list of binders to reflect under the form of an opaque 'Var', that
+    -- qualifyExpand can't touch when we do a first pass in 'makeGhcSpec0'. However, once we reflected all
+    -- the functions, we are left with a pair (Var, LocSpecType). The latter /needs/ to be qualified and
+    -- expanded again, for example in case it has expression aliases derived from 'inlines'.
+    expandReflectedSignature :: (Ghc.Var, LocSpecType) -> (Ghc.Var, LocSpecType)
+    expandReflectedSignature = fmap (Bare.qualifyExpand env name rtEnv (F.dummyPos "expand-refSigs") [])
+
     (wreflSigs, reflSigs)   = L.partition ((`elem` gsWiredReft refl) . fst) 
                                  [ (x, t) | (x, t, _) <- gsHAxioms refl ]   
     reflected       = fst <$> (wreflSigs ++ reflSigs)
@@ -732,7 +785,7 @@ _grepClassAssumes  = concatMap go
     goOne (x, RIAssumed t) = Just (fmap (F.symbol . (".$c" ++ ) . F.symbolString) x, t)
     goOne (_, RISig _)     = Nothing
 
-makeSigEnv :: F.TCEmb Ghc.TyCon -> Bare.TyConMap -> Ghc.NameSet -> BareRTEnv -> Bare.SigEnv 
+makeSigEnv :: F.TCEmb Ghc.TyCon -> Bare.TyConMap -> S.HashSet StableName -> BareRTEnv -> Bare.SigEnv 
 makeSigEnv embs tyi exports rtEnv = Bare.SigEnv
   { sigEmbs     = embs 
   , sigTyRTyMap = tyi 
@@ -874,7 +927,7 @@ makeSpecName env tycEnv measEnv name = SpNames
   where 
     datacons, cls :: [DataConP]
     datacons   = Bare.tcDataCons tycEnv 
-    cls        = F.tracepp "meClasses" $ Bare.meClasses measEnv 
+    cls        = F.notracepp "meClasses" $ Bare.meClasses measEnv 
     tycons     = Bare.tcTyCons   tycEnv 
 
 
@@ -976,7 +1029,9 @@ makeLiftedSpec src _env refl sData sig qual myRTE lSpec0 = lSpec0
   , Ms.qualifiers = filter (isLocInFile srcF) (gsQualifiers qual)
   }
   where
-    mkSigs xts    = [ toBare (x, t) | (x, t) <- xts,  S.member x sigVars && (isExported src x) ] 
+    mkSigs xts    = [ toBare (x, t) | (x, t) <- xts
+                    ,  S.member x sigVars && (isExportedVar (view targetSrcIso src) x) 
+                    ] 
     toBare (x, t) = (varLocSym x, Bare.specToBare <$> t)
     xbs           = toBare <$> reflTySigs 
     sigVars       = S.difference defVars reflVars
@@ -986,14 +1041,20 @@ makeLiftedSpec src _env refl sData sig qual myRTE lSpec0 = lSpec0
     -- myAliases fld = M.elems . fld $ myRTE 
     srcF          = _giTarget src 
 
-isExported :: GhcSrc -> Ghc.Var -> Bool
-isExported info v = n `Ghc.elemNameSet` ns
-  where
-    n                = Ghc.getName v
-    ns               = _gsExports info
-
+-- | Returns 'True' if the input determines a location within the input file. Due to the fact we might have
+-- Haskell sources which have \"companion\" specs defined alongside them, we also need to account for this
+-- case, by stripping out the extensions and check that the LHS is a Haskell source and the RHS a spec file.
 isLocInFile :: (F.Loc a) => FilePath -> a ->  Bool 
-isLocInFile f lx = f == (locFile lx) 
+isLocInFile f lx = f == lifted || isCompanion
+  where
+    lifted :: FilePath
+    lifted = locFile lx
+
+    isCompanion :: Bool
+    isCompanion =
+      (==) (dropExtension f) (dropExtension lifted)
+       &&  isExtFile Hs f
+       &&  isExtFile Files.Spec lifted
 
 locFile :: (F.Loc a) => a -> FilePath 
 locFile = Misc.fst3 . F.sourcePosElts . F.sp_start . F.srcSpan

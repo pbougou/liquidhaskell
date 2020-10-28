@@ -22,26 +22,31 @@ module Language.Haskell.Liquid.Types.PrettyPrint
   , pprintLongList
   , pprintSymbol
 
+  -- * Printing diagnostics
+  , printWarning
+  , printError
+
+  -- * Reporting errors in the typechecking phase
+  , reportErrors
+
   ) where
+
+import           Control.Monad
 
 import qualified Data.HashMap.Strict              as M
 import qualified Data.List                        as L                               -- (sort)
 import           Data.String
-import           ErrUtils                         (ErrMsg)
-import           GHC                              (Name, Class)
+import qualified TcRnMonad                        as Ghc
 import qualified CoreSyn as GHC
-import           HscTypes                         (SourceError)
-import           BasicTypes                       (PprPrec, topPrec, funPrec)
 import           Language.Fixpoint.Misc
-import qualified Language.Fixpoint.Types          as F 
+import qualified Language.Fixpoint.Types          as F
 import           Language.Haskell.Liquid.GHC.API  as Ghc hiding (maybeParen, LM)
+import           Language.Haskell.Liquid.GHC.Logging (putErrMsg, mkLongErrAt)
 import           Language.Haskell.Liquid.GHC.Misc
 import           Language.Haskell.Liquid.Misc
-import           Language.Haskell.Liquid.Types.Types    
+import           Language.Haskell.Liquid.Types.Types
 import           Prelude                          hiding (error)
-import           SrcLoc
 import           Text.PrettyPrint.HughesPJ        hiding ((<>))
-import           Language.Haskell.Liquid.GHC.TypeRep
 
 --------------------------------------------------------------------------------
 pprManyOrdered :: (PPrint a, Ord a) => F.Tidy -> String -> [a] -> [Doc]
@@ -407,3 +412,16 @@ instance (PPrint r, F.Reftable r) => PPrint (UReft r) where
     | otherwise  = pprintTidy k p <-> text " & " <-> pprintTidy k r
 
 --------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+-- | Pretty-printing errors ----------------------------------------------------
+--------------------------------------------------------------------------------
+
+printError :: (Show e, F.PPrint e) => F.Tidy -> DynFlags -> TError e -> IO ()
+printError k dyn err = putErrMsg dyn (pos err) (ppError k empty err)
+
+-- | Similar in spirit to 'reportErrors' from the GHC API, but it uses our pretty-printer
+-- and shim functions under the hood.
+reportErrors :: (Show e, F.PPrint e) => F.Tidy -> [TError e] -> Ghc.TcRn ()
+reportErrors k errs =
+  forM errs (\err -> mkLongErrAt (pos err) (ppError k empty err) mempty) >>= Ghc.reportErrors

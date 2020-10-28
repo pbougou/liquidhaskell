@@ -16,42 +16,28 @@
 
 module Language.Haskell.Liquid.GHC.Misc where
 
-import           Class                                      (classKey)
 import           Data.String
 import qualified Data.List as L
 import           PrelNames                                  (fractionalClassKeys)
-import           FamInstEnv
 import           Debug.Trace
--- import qualified ConLike                                    as Ghc
 
 import qualified CoreUtils
 import qualified DataCon                                    -- (dataConInstArgTys, isTupleDataCon)
 import           Prelude                                    hiding (error)
-import           Avail                                      (availsToNameSet)
-import           BasicTypes                                 (Arity, noOccInfo)
 import           CoreSyn                                    hiding (Expr, sourceName)
 import qualified CoreSyn                                    as Core
 import           CostCentre
 import           Language.Haskell.Liquid.GHC.API            as Ghc hiding (L, sourceName)
-import           HscTypes                                   (ModGuts(..), HscEnv(..), FindResult(..),
-                                                             Dependencies(..))
-import           TysWiredIn                                 (anyTy)
-import           NameSet                                    (NameSet)
 import           Bag
-import           ErrUtils
 import           CoreLint
 import           CoreMonad
 
-import           Text.Parsec.Pos                            (incSourceColumn, sourceName, sourceLine, sourceColumn, newPos)
-
-import           Module                                     (moduleNameFS)
 import           Finder                                     (findImportedModule, cannotFindModule)
 import           Panic                                      (throwGhcException)
 import           TcRnDriver
 -- import           TcRnTypes
 
 
-import           Type                                       (expandTypeSynonyms, liftedTypeKind)
 import           IdInfo
 import qualified TyCon                                      as TC
 import           Data.Char                                  (isLower, isSpace, isUpper)
@@ -66,7 +52,6 @@ import           Control.Arrow                              (second)
 import           Control.Monad                              ((>=>))
 import           Outputable                                 (Outputable (..), text, ppr)
 import qualified Outputable                                 as Out
-import           DynFlags
 import qualified Text.PrettyPrint.HughesPJ                  as PJ
 import           Language.Fixpoint.Types                    hiding (L, panic, Loc (..), SrcSpan, Constant, SESearch (..))
 import qualified Language.Fixpoint.Types                    as F
@@ -87,43 +72,6 @@ mkAlive x
   | otherwise
   = x
 
-
-
---------------------------------------------------------------------------------
--- | Datatype For Holding GHC ModGuts ------------------------------------------
---------------------------------------------------------------------------------
-data MGIModGuts = MI 
-  { mgi_binds     :: !CoreProgram
-  , mgi_module    :: !Module
-  , mgi_deps      :: !Dependencies
-  , mgi_dir_imps  :: ![ModuleName]
-  , mgi_rdr_env   :: !GlobalRdrEnv
-  , mgi_tcs       :: ![TyCon]
-  , mgi_fam_insts :: ![FamInst]
-  , mgi_exports   :: !NameSet
-  , mgi_cls_inst  :: !(Maybe [ClsInst])
-  }
-
-miModGuts :: Maybe [ClsInst] -> ModGuts -> MGIModGuts
-miModGuts cls mg  = MI 
-  { mgi_binds     = mg_binds mg
-  , mgi_module    = mg_module mg
-  , mgi_deps      = mg_deps mg
-  , mgi_dir_imps  = mg_dir_imps mg
-  , mgi_rdr_env   = mg_rdr_env mg
-  , mgi_tcs       = mg_tcs mg
-  , mgi_fam_insts = mg_fam_insts mg
-  , mgi_exports   = availsToNameSet $ mg_exports mg
-  , mgi_cls_inst  = cls
-  }
-  where _z        = showPpr (zing <$> mg_fam_insts mg)
-        zing fi   = (fi_fam fi, fi_tcs fi, fi_tvs fi, fi_rhs fi)
-
-mg_dir_imps :: ModGuts -> [ModuleName]
-mg_dir_imps m = fst <$> (dep_mods $ mg_deps m)
-
-mgi_namestring :: MGIModGuts -> String
-mgi_namestring = moduleNameString . moduleName . mgi_module
 
 --------------------------------------------------------------------------------
 -- | Encoding and Decoding Location --------------------------------------------
@@ -285,20 +233,16 @@ srcSpanFSrcSpan sp = F.SS p p'
     p'             = srcSpanSourcePosE sp
 
 sourcePos2SrcSpan :: SourcePos -> SourcePos -> SrcSpan
-sourcePos2SrcSpan p p' = RealSrcSpan $ realSrcSpan f l c l' c'
+sourcePos2SrcSpan p p' = RealSrcSpan $ realSrcSpan f (unPos l) (unPos c) (unPos l') (unPos c')
   where
     (f, l,  c)         = F.sourcePosElts p
     (_, l', c')        = F.sourcePosElts p'
 
 sourcePosSrcSpan   :: SourcePos -> SrcSpan
-sourcePosSrcSpan p = sourcePos2SrcSpan p (incSourceColumn p 1)
+sourcePosSrcSpan p@(SourcePos file line col) = sourcePos2SrcSpan p (SourcePos file line (succPos col))
 
 sourcePosSrcLoc    :: SourcePos -> SrcLoc
-sourcePosSrcLoc p = mkSrcLoc (fsLit file) line col
-  where
-    file          = sourceName p
-    line          = sourceLine p
-    col           = sourceColumn p
+sourcePosSrcLoc (SourcePos file line col) = mkSrcLoc (fsLit file) (unPos line) (unPos col)
 
 srcSpanSourcePos :: SrcSpan -> SourcePos
 srcSpanSourcePos (UnhelpfulSpan _) = dummyPos "<no source information>"
@@ -325,7 +269,7 @@ lineCol :: RealSrcSpan -> (Int, Int)
 lineCol l          = (srcSpanStartLine l, srcSpanStartCol l)
 
 realSrcSpanSourcePos :: RealSrcSpan -> SourcePos
-realSrcSpanSourcePos s = newPos file line col
+realSrcSpanSourcePos s = safeSourcePos file line col
   where
     file               = unpackFS $ srcSpanFile s
     line               = srcSpanStartLine       s
@@ -333,7 +277,7 @@ realSrcSpanSourcePos s = newPos file line col
 
 
 realSrcSpanSourcePosE :: RealSrcSpan -> SourcePos
-realSrcSpanSourcePosE s = newPos file line col
+realSrcSpanSourcePosE s = safeSourcePos file line col
   where
     file                = unpackFS $ srcSpanFile s
     line                = srcSpanEndLine       s

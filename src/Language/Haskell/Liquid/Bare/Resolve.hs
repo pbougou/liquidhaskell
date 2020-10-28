@@ -57,6 +57,7 @@ import qualified Data.List                         as L
 import qualified Data.HashSet                      as S 
 import qualified Data.Maybe                        as Mb
 import qualified Data.HashMap.Strict               as M
+import qualified Data.Text                         as T
 import qualified Text.PrettyPrint.HughesPJ         as PJ 
 
 import qualified Language.Fixpoint.Utils.Files         as F 
@@ -135,7 +136,7 @@ localVarMap :: [Ghc.Var] -> LocalVars
 localVarMap vs = 
   Misc.group [ (x, (i, v)) | v    <- vs
                            , x    <- Mb.maybeToList (localKey v) 
-                           , let i = F.srcLine v 
+                           , let i = F.unPos (F.srcLine v)
              ]
 
 localKey   :: Ghc.Var -> Maybe F.Symbol
@@ -397,6 +398,14 @@ qualifyBareSpec env name l bs sp = sp
   } 
   where f      = qualify env name l bs 
 
+instance Qualify a => Qualify (RTAlias F.Symbol a) where
+  qualify env name l bs rtAlias
+   = rtAlias { rtName  = qualify env name l bs (rtName rtAlias)
+             , rtTArgs = qualify env name l bs (rtTArgs rtAlias)
+             , rtVArgs = qualify env name l bs (rtVArgs rtAlias)
+             , rtBody  = qualify env name l bs (rtBody rtAlias)
+             }
+
 instance Qualify F.Expr where 
   qualify = substEnv 
 
@@ -445,8 +454,8 @@ lookupLocalVar env lx gvs = Misc.findNearest lxn kvs
   where 
     _msg                  = "LOOKUP-LOCAL: " ++ F.showpp (F.val lx, lxn, kvs)
     kvs                   = gs ++ M.lookupDefault [] x (reLocalVars env) 
-    gs                    = [(F.srcLine v, v) | v <- gvs]
-    lxn                   = F.srcLine lx  
+    gs                    = [(F.unPos (F.srcLine v), v) | v <- gvs]
+    lxn                   = F.unPos (F.srcLine lx)
     (_, x)                = unQualifySymbol (F.val lx)
 
 
@@ -518,7 +527,7 @@ knownGhcDataCon env name lx = Mb.isJust v
 -------------------------------------------------------------------------------
 class ResolveSym a where 
   resolveLocSym :: Env -> ModName -> String -> LocSymbol -> Either UserError a 
-  
+
 instance ResolveSym Ghc.Var where 
   resolveLocSym = resolveWith "variable" $ \case 
                     Ghc.AnId x -> Just x 
@@ -534,10 +543,67 @@ instance ResolveSym Ghc.DataCon where
                     Ghc.AConLike (Ghc.RealDataCon x) -> Just x 
                     _                                -> Nothing
 
-instance ResolveSym F.Symbol where 
-  resolveLocSym env name _ lx = case resolveLocSym env name "Var" lx of 
-    Left _               -> Right (val lx)
-    Right (v :: Ghc.Var) -> Right (F.symbol v)
+
+{- Note [ResolveSym for Symbol]
+
+In case we need to resolve (aka qualify) a 'Symbol', we need to do some extra work. Generally speaking,
+all these 'ResolveSym' instances perform a lookup into a 'Map' keyed by the 'Symbol' in
+order to find a 'TyThing'. More specifically such map is known as the 'TyThingMap':
+
+type TyThingMap = M.HashMap F.Symbol [(F.Symbol, Ghc.TyThing)]
+
+This means, in practice, that we might have more than one result indexed by a given 'Symbol', and we need
+to make a choice. The function 'rankedThings' does this. By default, we try to extract only /identifiers/
+(i.e. a GHC's 'Id') out of an input 'TyThing', but in the case of test \"T1688\", something different happened.
+By tracing calls to 'rankedThings' (called by 'resolveLocSym') there were cases where we had something like
+this as our input TyThingMap:
+
+[
+ 1 : T1688Lib : Data constructor T1688Lib.Lambda,
+ 1 : T1688Lib : Identifier T1688Lib.Lambda
+]
+
+Here name resolution worked because 'resolveLocSym' used the 'ResolveSym' instance defined for 'GHC.Var' that
+looks only for 'Id's (contained inside 'Identifier's, and we had one). In some other cases, though,
+'resolveLocSym' got called with only this:
+
+[1 : T1688Lib : Data constructor T1688Lib.Lambda]
+
+This would /not/ yield a match, despite the fact a \"Data constructor\" in principle /does/ contain an 'Id'
+(it can be extracted out of a 'RealDataCon' by calling 'dataConWorkId'). In the case of test T1688, such
+failed lookup caused the 'Symbol' to /not/ qualify, which in turn caused the symbols inside the type synonym:
+
+ProofOf( Step (App (Lambda x e) v) e)
+
+To not qualify. Finally, by the time 'expand' was called, the 'ProofOf' type alias would be replaced with
+the correct refinement, but the unqualified 'Symbol's would now cause a test failure when refining the client
+module.
+
+It's not clear to me (Alfredo) why 'resolveLocSym' is called multiple times within the same module with
+different inputs, but it definitely makes sense to allow for the special case here, at least for 'Symbol's.
+
+Probably finding the /root cause/ would entail partially rewriting the name resoultion engine.
+
+-}
+
+
+instance ResolveSym F.Symbol where
+  resolveLocSym env name _ lx =
+    -- If we can't resolve the input 'Symbol' from an 'Id', try again
+    -- by grabbing the 'Id' of an 'AConLike', if any.
+    -- See Note [ResolveSym for Symbol].
+    let resolved =  resolveLocSym env name "Var" lx
+                 <> resolveWith "variable" lookupVarInsideRealDataCon env name "Var" lx
+    in case resolved of
+      Left _               -> Right (val lx)
+      Right (v :: Ghc.Var) -> Right (F.symbol v)
+    where
+      lookupVarInsideRealDataCon :: Ghc.TyThing -> Maybe Ghc.Var
+      lookupVarInsideRealDataCon = \case
+        Ghc.AConLike (Ghc.RealDataCon x) -> Just (Ghc.dataConWorkId x)
+        _                                -> Nothing
+
+
 
 resolveWith :: (PPrint a) => PJ.Doc -> (Ghc.TyThing -> Maybe a) -> Env -> ModName -> String -> LocSymbol 
             -> Either UserError a 
@@ -622,9 +688,32 @@ matchMod env tgtName defName allowExt = go
      && ms == [tgtName]   = [0]                       -- local variable, see tests-names-pos-local00.hs
      | ms == [defName]    = [1]
      | allowExt && isExt  = [matchImp env defName 2]  -- to allow matching re-exported names e.g. Data.Set.union for Data.Set.Internal.union
-     | otherwise          = []  
+     | otherwise          = []
      where 
-       isExt              = allowExt && any (`F.isPrefixOfSym` defName) ms
+       isExt              = any (`isParentModuleOf` defName) ms
+
+-- | Returns 'True' if the 'Symbol' given as a first argument represents a parent module for the second.
+--
+-- >>> L.symbolic "Data.Text" `isParentModuleOf` L.symbolic "Data.Text.Internal"
+-- True
+--
+-- Invariants:
+--
+-- * The empty 'Symbol' is always considered the module prefix of the second,
+--   in compliance with 'isPrefixOfSym' (AND: why?)
+-- * If the parent \"hierarchy\" is smaller than the children's one, this is clearly not a parent module.
+isParentModuleOf :: F.Symbol -> F.Symbol -> Bool
+isParentModuleOf parentModule childModule
+  | isEmptySymbol parentModule = True
+  | otherwise                  =
+    length parentHierarchy <= length childHierarchy && all (uncurry (==)) (zip parentHierarchy childHierarchy)
+  where
+    parentHierarchy :: [T.Text]
+    parentHierarchy = T.splitOn "." . F.symbolText $ parentModule
+
+    childHierarchy :: [T.Text]
+    childHierarchy = T.splitOn "." . F.symbolText $ childModule
+
 
 symbolModules :: Env -> F.Symbol -> (F.Symbol, Maybe [F.Symbol])
 symbolModules env s = (x, glerb <$> modMb) 

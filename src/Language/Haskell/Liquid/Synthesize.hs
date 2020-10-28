@@ -31,21 +31,19 @@ import           Text.PrettyPrint.HughesPJ (text, ($+$))
 import           Control.Monad.State.Lazy
 import qualified Data.HashMap.Strict as M 
 import           Data.Maybe
-import           Debug.Trace 
-import           Language.Haskell.Liquid.GHC.TypeRep
-import           Data.List 
-import           Data.Tuple.Extra
 import           CoreUtils (exprType)
 import           TyCoRep
 import           Language.Fixpoint.Types.Visitor (mapKVars)
 import           TysWiredIn
+import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
+import           Data.Tuple.Extra
 
 synthesize :: FilePath -> F.Config -> CGInfo -> IO [Error]
 synthesize tgt fcfg cginfo = 
   mapM go (M.toList $ holesMap cginfo)
   where 
     measures = map (val . msName) ((gsMeasures . gsData . giSpec . ghcI) cginfo)
-    go (x, HoleInfo t loc env (cgi,cge)) = do 
+    go (x, HoleInfo _ loc env (cgi,cge)) = do 
       let topLvlBndr = fromMaybe (error "Top-level binder not found") (cgVar cge)
           typeOfTopLvlBnd = fromMaybe (error "Type: Top-level symbol not found") (M.lookup (symbol topLvlBndr) (reGlobal env))
           coreProgram = giCbs $ giSrc $ ghcI cgi
@@ -69,13 +67,14 @@ synthesize tgt fcfg cginfo =
       let foralls = foralls' ++ fs
       fills <- synthesize' ctx cgi senv1 typeOfTopLvlBnd topLvlBndr typeOfTopLvlBnd foralls state0 (concat cons)
 
-      let outMode = debugOut (getConfig cge)
+      -- let outMode = debugOut (getConfig cge)
 
       return $ ErrHole loc (
         if not (null fills)
-          then text "\n Hole Fills:" $+$  if outMode 
+          then text "\n Hole Fills:" $+$  {- if outMode 
                                             then pprintManyDebug (map fromAnf fills)
-                                            else pprintMany (map (coreToHs typeOfTopLvlBnd topLvlBndr . fromAnf) fills)
+                                            else -}
+                                          pprintMany (map (coreToHs typeOfTopLvlBnd topLvlBndr . fromAnf) fills)
           else mempty) mempty (symbol x) typeOfTopLvlBnd 
 
 

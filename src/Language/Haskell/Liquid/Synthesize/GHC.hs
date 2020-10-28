@@ -25,7 +25,6 @@ import           TysWiredIn
 
 import           Data.List
 import           Data.List.Split
-import           Debug.Trace
 
 instance Default Type where
     def = TyVarTy alphaTyVar 
@@ -107,7 +106,7 @@ fromAnf' (Let bnd e) bnds
                                 in  fromAnf' e ((rb, lb') : bnds')
 fromAnf' (Var var) bnds 
   = (fromMaybe (Var var) (lookup var bnds), bnds)
-fromAnf' (Case scr bnd tp alts) bnds
+fromAnf' (Case _ bnd tp alts) bnds
   = let scr' = fromMaybe (Var bnd) (lookup bnd bnds)
     in  (Case scr' bnd tp (map (\(altc, xs, e) -> (altc, xs, fst $ fromAnf' e bnds)) alts), bnds)
 fromAnf' (App e1 e2) bnds
@@ -166,7 +165,7 @@ pprintFormals i v (Lam b e) cnt vs
       else  if cnt > 0 
               then  pprintFormals i v e (cnt - 1) (b:vs)
               else  " " ++ show b ++ pprintFormals i v e cnt vs
-pprintFormals i _ e cnt vs
+pprintFormals i _ e _ vs
   = " =" ++ pprintBody vs i e
 
 caseIndent :: Int 
@@ -220,7 +219,7 @@ fixApplication e =
       cleanWs = rmTypeAppl ws
       ws0 = fixCommas $ fixParen (map rmModName cleanWs)
       ws1 = fixMore ws0
-  in  unwords (trace (" [ ws0 ] " ++ show ws0) ws1) 
+  in  unwords ws1
 
 fixMore :: [String] -> [String]
 fixMore [] 

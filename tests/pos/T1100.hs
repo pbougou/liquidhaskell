@@ -1,17 +1,20 @@
+{-# LANGUAGE ExistentialQuantification, KindSignatures, TypeFamilies, GADTs #-}
+
+module T1100 where
+
 {-@ LIQUID "--exact-data-con"                      @-}
 {-@ LIQUID "--no-adt"                              @-}
 {-@ LIQUID "--higherorder"                         @-}
 {-@ LIQUID "--no-termination"                      @-}
 
-{-# LANGUAGE ExistentialQuantification, KindSignatures, TypeFamilies, GADTs #-}
 
 class PersistEntity record where
     data EntityField record :: * -> *
 
 instance PersistEntity Blob where
   {-@ data EntityField Blob typ where
-        BlobXVal :: EntityField Blob {v:Int | v >= 0}
-      | BlobYVal :: EntityField Blob Int
+          BlobXVal :: EntityField Blob {v:Int | v >= 0}
+        | BlobYVal :: EntityField Blob Int
     @-}
     data EntityField Blob typ where
         BlobXVal :: EntityField Blob Int

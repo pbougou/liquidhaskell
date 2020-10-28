@@ -4,6 +4,9 @@
 {-# LANGUAGE TemplateHaskell           #-}
 {-# LANGUAGE TupleSections             #-}
 {-# LANGUAGE TypeSynonymInstances      #-}
+{-# LANGUAGE NamedFieldPuns            #-}
+{-# LANGUAGE MultiWayIf                #-}
+{-# LANGUAGE ViewPatterns              #-}
 {-# OPTIONS_GHC -fno-cse #-}
 
 -- | This module contains all the code needed to output the result which
@@ -14,7 +17,7 @@
 
 module Language.Haskell.Liquid.UX.CmdLine (
    -- * Get Command Line Configuration
-     getOpts, mkOpts, defConfig
+     getOpts, mkOpts, defConfig, config
 
    -- * Update Configuration With Pragma
    , withPragmas
@@ -26,8 +29,15 @@ module Language.Haskell.Liquid.UX.CmdLine (
    , exitWithResult
    , addErrors
 
+   -- * Reporting the output of the checking
+   , OutputResult(..)
+   , reportResult
+
    -- * Diff check mode
    , diffcheck
+
+   -- * Show info about this version of LiquidHaskell
+   , printLiquidHaskellBanner
 
 ) where
 
@@ -35,6 +45,7 @@ import Prelude hiding (error)
 
 
 import Control.Monad
+import Control.Monad.IO.Class
 import Data.Maybe
 import Data.Aeson (encode)
 import qualified Data.ByteString.Lazy.Char8 as B
@@ -46,8 +57,9 @@ import System.Exit
 import System.Environment
 import System.Console.CmdArgs.Explicit
 import System.Console.CmdArgs.Implicit     hiding (Loud)
+import qualified System.Console.CmdArgs.Verbosity as CmdArgs
 import System.Console.CmdArgs.Text
-import GitHash 
+import GitHash
 
 import Data.List                           (nub)
 
@@ -59,17 +71,19 @@ import Language.Fixpoint.Misc
 import Language.Fixpoint.Types.Names
 import Language.Fixpoint.Types             hiding (panic, Error, Result, saveQuery)
 import qualified Language.Fixpoint.Types as F
+import Language.Fixpoint.Solver.Stats as Solver
 import Language.Haskell.Liquid.UX.Annotate
 import Language.Haskell.Liquid.UX.Config
 import Language.Haskell.Liquid.GHC.Misc
 import Language.Haskell.Liquid.Misc
-import Language.Haskell.Liquid.Types.PrettyPrint
+import Language.Haskell.Liquid.Types.PrettyPrint ()
 import Language.Haskell.Liquid.Types       hiding (typ)
 import qualified Language.Haskell.Liquid.UX.ACSS as ACSS
 
+import qualified Language.Haskell.Liquid.GHC.API as GHC
 
-import Text.Parsec.Pos                     (newPos)
-import Text.PrettyPrint.HughesPJ           hiding (Mode)
+
+import Text.PrettyPrint.HughesPJ           hiding (Mode, (<>))
 
 
 
@@ -85,7 +99,13 @@ defaultMaxParams = 2
 ---------------------------------------------------------------------------------
 config :: Mode (CmdArgs Config)
 config = cmdArgsMode $ Config {
-   files
+  loggingVerbosity
+    = enum [ Quiet        &= name "quiet"   &= help "Minimal logging verbosity"
+           , Normal       &= name "normal"  &= help "Normal logging verbosity"
+           , CmdArgs.Loud &= name "verbose" &= help "Verbose logging"
+           ]
+
+ , files
     = def &= typ "TARGET"
           &= args
           &= typFile
@@ -106,10 +126,10 @@ config = cmdArgsMode $ Config {
     = def
           &= help "Allow higher order binders into the logic"
 
- , smtTimeout 
+ , smtTimeout
     = def
-          &= help "Timeout of smt queries in msec"    
-      
+          &= help "Timeout of smt queries in msec"
+
  , higherorderqs
     = def
           &= help "Allow higher order qualifiers to get automatically instantiated"
@@ -134,23 +154,23 @@ config = cmdArgsMode $ Config {
           &= name "prune-unsorted"
 
  , notermination
-    = def 
+    = def
           &= help "Disable Termination Check"
           &= name "no-termination-check"
 
- , rankNTypes 
+ , rankNTypes
     = def &= help "Adds precise reasoning on presence of rankNTypes"
-          &= name "rankNTypes" 
+          &= name "rankNTypes"
 
  , noclasscheck
-    = def 
+    = def
           &= help "Disable Class Instance Check"
           &= name "no-class-check"
 
  , nostructuralterm
     = def &= name "no-structural-termination"
-          &= help "Disable structural termination check" 
-          
+          &= help "Disable structural termination check"
+
  , gradual
     = def &= help "Enable gradual refinement type checking"
           &= name "gradual"
@@ -184,7 +204,7 @@ config = cmdArgsMode $ Config {
     = def &= help "Check GHC generated binders (e.g. Read, Show instances)"
           &= name "check-derived"
 
- , caseExpandDepth 
+ , caseExpandDepth
     = 2   &= help "Maximum depth at which to expand DEFAULT in case-of (default=2)"
           &= name "max-case-expand"
 
@@ -324,50 +344,50 @@ config = cmdArgsMode $ Config {
           -- PLE-OPT &= name "automatic-instances"
 
   , proofLogicEval
-    = def  
+    = def
         &= help "Enable Proof-by-Logical-Evaluation"
         &= name "ple"
 
   , oldPLE
-    = def  
+    = def
         &= help "Enable Proof-by-Logical-Evaluation"
         &= name "oldple"
 
   , proofLogicEvalLocal
-    = def  
+    = def
         &= help "Enable Proof-by-Logical-Evaluation locally, per function"
         &= name "ple-local"
 
   , extensionality
-    = def 
+    = def
         &= help "Enable extensional interpretation of function equality"
         &= name "extensionality"
 
   , nopolyinfer
-    = def 
+    = def
         &= help "No inference of polymorphic type application. Gives imprecision, but speedup."
         &= name "fast"
 
-  , reflection 
-    = def 
-        &= help "Enable reflection of Haskell functions and theorem proving" 
+  , reflection
+    = def
+        &= help "Enable reflection of Haskell functions and theorem proving"
         &= name "reflection"
 
-  , compileSpec 
-    = def 
+  , compileSpec
+    = def
         &= name "compile-spec"
-        &= help "Only compile specifications (into .bspec file); skip verification" 
+        &= help "Only compile specifications (into .bspec file); skip verification"
 
   , noCheckImports
-    = def 
+    = def
         &= name "no-check-imports"
-        &= help "Do not check the transitive imports; only check the target files." 
+        &= help "Do not check the transitive imports; only check the target files."
 
   , typedHoles
-    = def 
+    = def
         &= name "typed-holes"
         &= help "Use (refinement) typed-holes [currently warns on '_x' variables]"
-  , maxMatchDepth 
+  , maxMatchDepth
     = def
         &= name "max-match-depth"
         &= help "Define the number of expressions to pattern match on (typed-holes must be on to use this flag)."
@@ -375,13 +395,23 @@ config = cmdArgsMode $ Config {
     = def
         &= name "max-app-depth"
   , maxArgsDepth
-    = def 
+    = def
         &= name "max-args-depth"
-  , debugOut
-    = False &= name "debug-out"
-            &= help "Print the program output in Core format."
-  } &= verbosity
-    &= program "liquid"
+  ,
+    maxRWOrderingConstraints
+    = def
+        &= name "max-rw-ordering-constraints"
+        &= help (   "Maximium number of symbols to compare for rewrite termination. " 
+                 ++ "Lower values can speedup verification, but rewriting may terminate prematurely. "
+                 ++ "Leave empty to consider all symbols." )
+  ,
+    rwTerminationCheck
+    = def
+        &= name "rw-termination-check"
+        &= help (   "Enable the rewrite divergence checker. " 
+                 ++ "Can speed up verification if rewriting terminates, but can also cause divergence."
+                )
+  } &= program "liquid"
     &= help    "Refinement Types for Haskell"
     &= summary copyright
     &= details [ "LiquidHaskell is a Refinement Type based verifier for Haskell"
@@ -403,10 +433,14 @@ getOpts as = do
                                 }
                          as
   cfg    <- fixConfig cfg1
+  setVerbosity (loggingVerbosity cfg)
   when (json cfg) $ setVerbosity Quiet
-  whenNormal $ putStrLn copyright
   withSmtSolver cfg
 
+-- | Shows the LiquidHaskell banner, that includes things like the copyright, the
+-- git commit and the version.
+printLiquidHaskellBanner :: IO ()
+printLiquidHaskellBanner = whenNormal $ putStrLn copyright
 
 cmdArgsRun' :: Mode (CmdArgs a) -> [String] -> IO a
 cmdArgsRun' md as
@@ -469,7 +503,7 @@ envCfg = do
     Just s  -> parsePragma $ envLoc s
   where
     envLoc  = Loc l l
-    l       = newPos "ENVIRONMENT" 0 0
+    l       = safeSourcePos "ENVIRONMENT" 1 1
 
 copyright :: String
 copyright = concat $ concat
@@ -490,7 +524,7 @@ gitInfo  = msg
     msg    = case giTry of
                Left _   -> " no git information"
                Right gi -> gitMsg gi
-    
+
 gitMsg :: GitInfo -> String
 gitMsg gi = concat
   [ " [", giBranch gi, "@", giHash gi
@@ -547,113 +581,125 @@ parsePragma   :: Located String -> IO Config
 parsePragma = withPragma defConfig
 
 defConfig :: Config
-defConfig = Config 
-  { files             = def
-  , idirs             = def
-  , fullcheck         = def
-  , linear            = def
-  , stringTheory      = def
-  , higherorder       = def
-  , smtTimeout        = def 
-  , higherorderqs     = def
-  , diffcheck         = def
-  , saveQuery         = def
-  , checks            = def
-  , nostructuralterm  = def 
-  , noCheckUnknown    = def
-  , notermination     = False 
-  , rankNTypes        = False 
-  , noclasscheck      = False 
-  , gradual           = False
-  , bscope            = False 
-  , gdepth            = 1
-  , ginteractive      = False
-  , totalHaskell      = def -- True 
-  , nowarnings        = def
-  , noannotations     = def
-  , checkDerived      = False
-  , caseExpandDepth   = 2 
-  , notruetypes       = def
-  , nototality        = False
-  , pruneUnsorted     = def
-  , exactDC           = def
-  , noADT             = def
-  , cores             = def
-  , minPartSize       = FC.defaultMinPartSize
-  , maxPartSize       = FC.defaultMaxPartSize
-  , maxParams         = defaultMaxParams
-  , smtsolver         = def
-  , shortNames        = def
-  , shortErrors       = def
-  , cabalDir          = def
-  , ghcOptions        = def
-  , cFiles            = def
-  , port              = defaultPort
-  , scrapeInternals   = False
-  , scrapeImports     = False
-  , scrapeUsedImports = False
-  , elimStats         = False
-  , elimBound         = Nothing
-  , json              = False
-  , counterExamples   = False
-  , timeBinds         = False
-  , untidyCore        = False
-  , eliminate         = FC.Some
-  , noPatternInline   = False
-  , noSimplifyCore    = False
+defConfig = Config
+  { loggingVerbosity         = Quiet
+  , files                    = def
+  , idirs                    = def
+  , fullcheck                = def
+  , linear                   = def
+  , stringTheory             = def
+  , higherorder              = def
+  , smtTimeout               = def
+  , higherorderqs            = def
+  , diffcheck                = def
+  , saveQuery                = def
+  , checks                   = def
+  , nostructuralterm         = def
+  , noCheckUnknown           = def
+  , notermination            = False
+  , rankNTypes               = False
+  , noclasscheck             = False
+  , gradual                  = False
+  , bscope                   = False
+  , gdepth                   = 1
+  , ginteractive             = False
+  , totalHaskell             = def -- True
+  , nowarnings               = def
+  , noannotations            = def
+  , checkDerived             = False
+  , caseExpandDepth          = 2
+  , notruetypes              = def
+  , nototality               = False
+  , pruneUnsorted            = def
+  , exactDC                  = def
+  , noADT                    = def
+  , cores                    = def
+  , minPartSize              = FC.defaultMinPartSize
+  , maxPartSize              = FC.defaultMaxPartSize
+  , maxParams                = defaultMaxParams
+  , smtsolver                = def
+  , shortNames               = def
+  , shortErrors              = def
+  , cabalDir                 = def
+  , ghcOptions               = def
+  , cFiles                   = def
+  , port                     = defaultPort
+  , scrapeInternals          = False
+  , scrapeImports            = False
+  , scrapeUsedImports        = False
+  , elimStats                = False
+  , elimBound                = Nothing
+  , json                     = False
+  , counterExamples          = False
+  , timeBinds                = False
+  , untidyCore               = False
+  , eliminate                = FC.Some
+  , noPatternInline          = False
+  , noSimplifyCore           = False
   -- PLE-OPT , autoInstantiate   = def
-  , noslice           = False
-  , noLiftedImport    = False
-  , proofLogicEval    = False
-  , oldPLE            = False
-  , proofLogicEvalLocal = False
-  , reflection        = False
-  , extensionality    = False 
-  , nopolyinfer       = False
-  , compileSpec       = False
-  , noCheckImports    = False
-  , typedHoles        = False
-  , maxMatchDepth     = 4
-  , maxAppDepth       = 2
-  , maxArgsDepth      = 1
-  , debugOut          = False
+  , noslice                  = False
+  , noLiftedImport           = False
+  , proofLogicEval           = False
+  , oldPLE                   = False
+  , proofLogicEvalLocal      = False
+  , reflection               = False
+  , extensionality           = False
+  , nopolyinfer              = False
+  , compileSpec              = False
+  , noCheckImports           = False
+  , typedHoles               = False
+  , maxMatchDepth            = 4
+  , maxAppDepth              = 2
+  , maxArgsDepth             = 1
+  , maxRWOrderingConstraints = Nothing
+  , rwTerminationCheck       = False
   }
 
-------------------------------------------------------------------------
--- | Exit Function -----------------------------------------------------
-------------------------------------------------------------------------
+
+-- | Writes the annotations (i.e. the files in the \".liquid\" hidden folder) and report the result
+-- of the checking using a supplied function.
+reportResult :: MonadIO m
+             => (OutputResult -> m ())
+             -> Config
+             -> [FilePath]
+             -> Output Doc
+             -> m ()
+reportResult logResultFull cfg targets out = do
+  annm <- {-# SCC "annotate" #-} liftIO $ annotate cfg targets out
+  liftIO $ whenNormal $ donePhase Loud "annotate"
+  if | json cfg  -> liftIO $ reportResultJson annm
+     | otherwise -> do
+         let r = o_result out
+         liftIO $ writeCheckVars $ o_vars out
+         cr <- liftIO $ resultWithContext r
+         let outputResult = resDocs tidy cr
+         -- For now, always print the \"header\" with colours, irrespective to the logger
+         -- passed as input.
+         liftIO $ printHeader (colorResult r) (orHeader outputResult)
+         logResultFull outputResult
+  pure ()
+  where
+    tidy :: F.Tidy
+    tidy = if shortErrors cfg then F.Lossy else F.Full
+
+    printHeader :: Moods -> Doc -> IO ()
+    printHeader mood d = colorPhaseLn mood "" (render d)
+
 
 ------------------------------------------------------------------------
-exitWithResult :: Config -> [FilePath] -> Output Doc -> IO (Output Doc)
+exitWithResult :: Config -> [FilePath] -> Output Doc -> IO ()
 ------------------------------------------------------------------------
-exitWithResult cfg targets out = do
-  annm <- {-# SCC "annotate" #-} annotate cfg targets out
-  whenNormal $ donePhase Loud "annotate"
-  -- let r = o_result out -- `addErrors` o_errors out
-  consoleResult cfg out annm
-  return out -- { o_result = r }
+exitWithResult cfg = reportResult writeResultStdout cfg
 
-consoleResult :: Config -> Output a -> ACSS.AnnMap -> IO ()
-consoleResult cfg
-  | json cfg  = consoleResultJson cfg
-  | otherwise = consoleResultFull cfg
-
-consoleResultFull :: Config -> Output a -> t -> IO ()
-consoleResultFull cfg out _ = do
-   let r = o_result out
-   writeCheckVars $ o_vars out
-   cr <- resultWithContext r
-   writeResult cfg (colorResult r) cr
-
-consoleResultJson :: t -> t1 -> ACSS.AnnMap -> IO ()
-consoleResultJson _ _ annm = do
-  putStrLn "RESULT"
+reportResultJson :: ACSS.AnnMap -> IO ()
+reportResultJson annm = do
+  putStrLn "LIQUID"
   B.putStrLn . encode . annErrors $ annm
 
 resultWithContext :: F.FixResult UserError -> IO (FixResult CError)
-resultWithContext (F.Unsafe es)   = F.Unsafe      <$> errorsWithContext es
-resultWithContext (F.Crash  es s) = (`F.Crash` s) <$> errorsWithContext es
-resultWithContext (F.Safe)        = return F.Safe 
+resultWithContext (F.Unsafe s es)  = F.Unsafe s    <$> errorsWithContext es
+resultWithContext (F.Crash  es s)  = (`F.Crash` s) <$> errorsWithContext es
+resultWithContext (F.Safe   stats) = return (F.Safe stats)
 
 instance Show (CtxError Doc) where
   show = showpp
@@ -661,25 +707,46 @@ instance Show (CtxError Doc) where
 writeCheckVars :: Symbolic a => Maybe [a] -> IO ()
 writeCheckVars Nothing     = return ()
 writeCheckVars (Just [])   = colorPhaseLn Loud "Checked Binders: None" ""
-writeCheckVars (Just ns)   = colorPhaseLn Loud "Checked Binders:" "" 
+writeCheckVars (Just ns)   = colorPhaseLn Loud "Checked Binders:" ""
                           >> forM_ ns (putStrLn . symbolString . dropModuleNames . symbol)
 
 type CError = CtxError Doc
 
-writeResult :: Config -> Moods -> F.FixResult CError -> IO ()
-writeResult cfg c          = mapM_ (writeDoc c) . zip [0..] . resDocs tidy
-  where
-    tidy                   = if shortErrors cfg then F.Lossy else F.Full
-    writeDoc c (i, d)      = writeBlock c i $ lines $ render d
-    writeBlock _ _ []      = return ()
-    writeBlock c 0 ss      = forM_ ss (colorPhaseLn c "")
-    writeBlock _  _ ss     = forM_ ("\n" : ss) putStrLn
+data OutputResult = OutputResult {
+    orHeader :: Doc
+    -- ^ The \"header\" like \"LIQUID: SAFE\", or \"LIQUID: UNSAFE\".
+  , orMessages :: [(GHC.SrcSpan, Doc)]
+    -- ^ The list of pretty-printable messages (typically errors) together with their
+    -- source locations.
+  }
 
+-- | Writes the result of this LiquidHaskell run to /stdout/.
+writeResultStdout :: OutputResult -> IO ()
+writeResultStdout (orMessages -> messages) = do
+  forM_ messages $ \(sSpan, doc) -> putStrLn (render $ pprint sSpan <> (text ": error: " <+> doc))
 
-resDocs :: F.Tidy -> F.FixResult CError -> [Doc]
-resDocs _ F.Safe           = [text "RESULT: SAFE"]
-resDocs k (F.Crash xs s)   = text "RESULT: ERROR"  : text s : pprManyOrdered k "" (errToFCrash <$> xs)
-resDocs k (F.Unsafe xs)    = text "RESULT: UNSAFE" : pprManyOrdered k "" (nub xs)
+-- | Given a 'FixResult' parameterised over a 'CError', this function returns the \"header\" to show to
+-- the user (i.e. \"SAFE\" or \"UNSAFE\") plus a list of 'Doc's together with the 'SrcSpan' they refer to.
+resDocs :: F.Tidy -> F.FixResult CError -> OutputResult
+resDocs _ (F.Safe  stats) =
+  OutputResult {
+    orHeader   = text $ "LIQUID: SAFE (" <> show (Solver.numChck stats) <> " constraints checked)"
+  , orMessages = mempty
+  }
+resDocs k (F.Crash xs s)  =
+  OutputResult {
+    orHeader = text "LIQUID: ERROR" <+> text s
+  , orMessages = map (cErrToSpanned k . errToFCrash) xs
+  }
+resDocs k (F.Unsafe _ xs)   =
+  OutputResult {
+    orHeader   = text "LIQUID: UNSAFE"
+  , orMessages = map (cErrToSpanned k) (nub xs)
+  }
+
+-- | Renders a 'CError' into a 'Doc' and its associated 'SrcSpan'.
+cErrToSpanned :: F.Tidy -> CError -> (GHC.SrcSpan, Doc)
+cErrToSpanned k CtxError{ctErr} = (pos ctErr, pprintTidy k ctErr)
 
 errToFCrash :: CtxError a -> CtxError a
 errToFCrash ce = ce { ctErr    = tx $ ctErr ce}
@@ -692,10 +759,10 @@ errToFCrash ce = ce { ctErr    = tx $ ctErr ce}
 reportUrl = text "Please submit a bug report at: https://github.com/ucsd-progsys/liquidhaskell" -}
 
 addErrors :: FixResult a -> [a] -> FixResult a
-addErrors r []             = r
-addErrors Safe errs        = Unsafe errs
-addErrors (Unsafe xs) errs = Unsafe (xs ++ errs)
-addErrors r  _             = r
+addErrors r []               = r
+addErrors (Safe s) errs      = Unsafe s errs
+addErrors (Unsafe s xs) errs = Unsafe s (xs ++ errs)
+addErrors r  _               = r
 
 instance Fixpoint (F.FixResult CError) where
-  toFix = vcat . resDocs F.Full
+  toFix = vcat . map snd . orMessages . resDocs F.Full

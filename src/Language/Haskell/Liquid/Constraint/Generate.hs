@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP                       #-}
 {-# LANGUAGE DeriveFoldable            #-}
 {-# LANGUAGE DeriveTraversable         #-}
 {-# LANGUAGE StandaloneDeriving        #-}
@@ -20,6 +21,10 @@
 
 module Language.Haskell.Liquid.Constraint.Generate ( generateConstraints, generateConstraintsWithEnv, caseEnv, consE ) where
 
+#if !MIN_VERSION_base(4,14,0)
+import Control.Monad.Fail
+#endif
+
 import           Outputable                                    (Outputable)
 import           Prelude                                       hiding (error)
 import           GHC.Stack
@@ -36,17 +41,12 @@ import           TyCon
 import           CoAxiom
 import           PrelNames
 import           Language.Haskell.Liquid.GHC.API               as Ghc hiding (exprType)
-import           Language.Haskell.Liquid.GHC.TypeRep
-import           Class                                         (className)
-import           Var
+import           Language.Haskell.Liquid.GHC.TypeRep           ()
 import           IdInfo
-import           Name        hiding (varName)
-import           FastString (fastStringToByteString)
 import           Unify
 import           UniqSet (mkUniqSet)
 import           Text.PrettyPrint.HughesPJ hiding ((<>)) 
 import           Control.Monad.State
-import           Control.Monad.Fail 
 import           Data.Maybe                                    (fromMaybe, catMaybes, isJust)
 import qualified Data.HashMap.Strict                           as M
 import qualified Data.HashSet                                  as S
@@ -76,7 +76,6 @@ import           Language.Haskell.Liquid.Transforms.CoreToLogic (weakenResult)
 import           Language.Haskell.Liquid.Bare.DataType (makeDataConChecker)
 
 import           Language.Haskell.Liquid.Types hiding (binds, Loc, loc, Def)
-import Debug.Trace
 
 --------------------------------------------------------------------------------
 -- | Constraint Generation: Toplevel -------------------------------------------
@@ -198,11 +197,10 @@ makeRecType :: (Enum a1, Eq a1, Num a1, F.Symbolic a)
 makeRecType autoenv t vs dxs is
   = mergecondition t $ fromRTypeRep $ trep {ty_binds = xs', ty_args = ts'}
   where
-    (xs', ts') = unzip $ replaceN (last is) (fromLeft $ makeDecrType autoenv vdxs) xts
+    (xs', ts') = unzip $ replaceN (last is) (safeFromLeft "makeRecType" $ makeDecrType autoenv vdxs) xts
     vdxs       = zip vs dxs
     xts        = zip (ty_binds trep) (ty_args trep)
     trep       = toRTypeRep $ unOCons t
-    fromLeft (Left x) = x 
 
 unOCons :: RType c tv r -> RType c tv r
 unOCons (RAllT v t r)      = RAllT v (unOCons t) r 
@@ -439,14 +437,15 @@ consCB _ _ γ (NonRec x _ ) | isHoleVar x && typedHoles (getConfig γ)
 consCB _ _ γ (NonRec x def)
   | Just (w, τ) <- grepDictionary def
   , Just d      <- dlookup (denv γ) w
-  = do t        <- trueTy τ
-       addW      $ WfC γ t
+  = do t        <- mapM trueTy τ
+       mapM addW (WfC γ <$> t)
        let xts   = dmap (fmap (f t)) d
        let  γ'   = γ { denv = dinsert (denv γ) x xts }
        t        <- trueTy (varType x)
        extender γ' (x, Assumed t)
    where
-    f t' (RAllT α te _) = subsTyVar_meet' (ty_var_value α, t') te
+    f [t']    (RAllT α te _) = subsTyVar_meet' (ty_var_value α, t') te
+    f (t':ts) (RAllT α te _) = f ts $ subsTyVar_meet' (ty_var_value α, t') te
     f _ _ = impossible Nothing "consCB on Dictionary: this should not happen"
 
 consCB _ _ γ (NonRec x e)
@@ -454,10 +453,13 @@ consCB _ _ γ (NonRec x e)
        to' <- consBind False γ (x, e, to) >>= (addPostTemplate γ)
        extender γ (x, makeSingleton γ (simplify e) <$> to')
 
-grepDictionary :: CoreExpr -> Maybe (Var, Type)
-grepDictionary (App (Var w) (Type t)) = Just (w, t)
-grepDictionary (App e (Var _))        = grepDictionary e
-grepDictionary _                      = Nothing
+grepDictionary :: CoreExpr -> Maybe (Var, [Type])
+grepDictionary = go [] 
+  where 
+    go ts (App (Var w) (Type t)) = Just (w, reverse (t:ts))
+    go ts (App e (Type t))       = go (t:ts) e
+    go ts (App e (Var _))        = go ts e
+    go _ _                       = Nothing
 
 --------------------------------------------------------------------------------
 consBind :: Bool -> CGEnv -> (Var, CoreExpr, Template SpecType) -> CG (Template SpecType)
@@ -1288,7 +1290,7 @@ argType :: Type -> Maybe F.Expr
 argType (LitTy (NumTyLit i))
   = mkI i
 argType (LitTy (StrTyLit s))
-  = mkS $ fastStringToByteString s
+  = mkS $ bytesFS s
 argType (TyVarTy x)
   = Just $ F.EVar $ F.symbol $ varName x
 argType t
@@ -1450,14 +1452,13 @@ isType a                        = eqType (exprType a) predType
 
 -- | @isGenericVar@ determines whether the @RTyVar@ has no class constraints
 isGenericVar :: RTyVar -> SpecType -> Bool
-isGenericVar α t =  all (\(c, α') -> (α'/=α) || isOrd c || isEq c ) (classConstrs t)
+isGenericVar α t =  all (\(c, α') -> (α'/=α) || isGenericClass c ) (classConstrs t)
   where 
     classConstrs t = [(c, ty_var_value α')
                         | (c, ts) <- tyClasses t
                         , t'      <- ts
                         , α'      <- freeTyVars t']
-    isOrd          = (ordClassName ==) . className
-    isEq           = (eqClassName ==) . className
+    isGenericClass c = className c `elem` [ordClassName, eqClassName] -- , functorClassName, monadClassName]
 
 -- instance MonadFail CG where 
 --  fail msg = panic Nothing msg

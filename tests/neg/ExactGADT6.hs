@@ -3,13 +3,15 @@
 
 {-# LANGUAGE ExistentialQuantification, KindSignatures, TypeFamilies, GADTs #-}
 
+module ExactGADT6 where
+
 class PersistEntity record where
     data EntityField record typ :: *
 
 instance PersistEntity Blob where
     {-@ data EntityField Blob typ where
-        BlobXVal :: EntityField Blob {v:Int | v >= 0}
-      | BlobYVal :: EntityField Blob Int
+           BlobXVal :: EntityField Blob {v:Int | v >= 0}
+         | BlobYVal :: EntityField Blob Int
     @-}
     data EntityField Blob typ where
         BlobXVal :: EntityField Blob Int
@@ -33,4 +35,3 @@ createUpdate field value = Update
 
 testUpdateQueryFail :: () -> Update Blob Int
 testUpdateQueryFail () = createUpdate BlobXVal (-1)
-

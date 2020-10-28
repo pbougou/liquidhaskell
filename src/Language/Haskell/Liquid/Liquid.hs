@@ -17,6 +17,9 @@ module Language.Haskell.Liquid.Liquid (
 
    -- * Liquid Constraint Generation 
   , liquidConstraints
+
+   -- * Checking a single module
+  , checkTargetInfo
   ) where
 
 import           Prelude hiding (error)
@@ -29,7 +32,7 @@ import           CoreSyn
 import           HscTypes                         (SourceError)
 import           GHC (HscEnv)
 import           System.Console.CmdArgs.Verbosity (whenLoud, whenNormal)
-import           Control.Monad (when)
+import           Control.Monad (when, unless)
 import qualified Data.Maybe as Mb
 import qualified Data.List  as L 
 import qualified Control.Exception as Ex
@@ -40,7 +43,6 @@ import           Language.Fixpoint.Solver
 import qualified Language.Fixpoint.Types as F
 import           Language.Haskell.Liquid.Types
 import           Language.Haskell.Liquid.Synthesize (synthesize)
-import           Language.Haskell.Liquid.Types.RefType (applySolution)
 import           Language.Haskell.Liquid.UX.Errors
 import           Language.Haskell.Liquid.UX.CmdLine
 import           Language.Haskell.Liquid.UX.Tidy
@@ -53,17 +55,14 @@ import           Language.Haskell.Liquid.UX.Annotate (mkOutput)
 import qualified Language.Haskell.Liquid.Termination.Structural as ST
 import qualified Language.Haskell.Liquid.GHC.Misc          as GM 
 
-import           Language.Haskell.Liquid.Types
-
-
 type MbEnv = Maybe HscEnv
-
 
 --------------------------------------------------------------------------------
 liquid :: [String] -> IO b
 --------------------------------------------------------------------------------
 liquid args = do 
   cfg     <- getOpts args 
+  printLiquidHaskellBanner
   (ec, _) <- runLiquid Nothing cfg
   exitWith ec
 
@@ -125,7 +124,7 @@ checkMany cfg d (g:gs) = do
   d' <- checkOne cfg g
   checkMany cfg (d `mappend` d') gs
 
-checkMany _   d [] =
+checkMany _ d [] =
   return d
 
 --------------------------------------------------------------------------------
@@ -134,7 +133,10 @@ checkOne :: Config -> TargetInfo -> IO (Output Doc)
 checkOne cfg g = do
   z <- actOrDie $ liquidOne g
   case z of
-    Left  e -> exitWithResult cfg [giTarget (giSrc g)] $ mempty { o_result = e }
+    Left  e -> do
+      let out = mempty { o_result = e }
+      exitWithResult cfg [giTarget (giSrc g)] out
+      pure out
     Right r -> return r
 
 
@@ -152,29 +154,49 @@ handle = return . Left . result
 --------------------------------------------------------------------------------
 liquidOne :: TargetInfo -> IO (Output Doc)
 --------------------------------------------------------------------------------
-liquidOne info
-  | compileSpec cfg = do 
-    donePhase Loud "Only compiling specifications [skipping verification]"
-    exitWithResult cfg [tgt] (mempty { o_result = F.Safe })
-  | otherwise = do
-    whenNormal $ donePhase Loud "Extracted Core using GHC"
-    -- whenLoud  $ do putStrLn $ showpp info
-                 -- putStrLn "*************** Original CoreBinds ***************************"
-                 -- putStrLn $ render $ pprintCBs (cbs info)
-    whenNormal $ donePhase Loud "Transformed Core"
-    whenLoud  $ do donePhase Loud "transformRecExpr"
-                   putStrLn "*************** Transform Rec Expr CoreBinds *****************"
-                   putStrLn $ showCBs (untidyCore cfg) cbs'
-                   -- putStrLn $ render $ pprintCBs cbs'
-                   -- putStrLn $ showPpr cbs'
-    edcs <- newPrune      cfg cbs' tgt info
-    out' <- liquidQueries cfg      tgt info edcs
-    DC.saveResult       tgt  out'
-    exitWithResult cfg [tgt] out'
-  where 
+liquidOne info = do
+  out' <- checkTargetInfo info
+  exitWithResult cfg [tgt] out'
+  pure out'
+  where
     cfg  = getConfig info
     tgt  = giTarget (giSrc info)
-    cbs' = giCbs (giSrc info) 
+
+--------------------------------------------------------------------------------
+checkTargetInfo :: TargetInfo -> IO (Output Doc)
+--------------------------------------------------------------------------------
+checkTargetInfo info = do
+  out <- check
+  unless (compileSpec cfg) $ DC.saveResult tgt out
+  pure out
+  where
+    check :: IO (Output Doc)
+    check
+      | compileSpec cfg = do
+        donePhase Loud "Only compiling specifications [skipping verification]"
+        pure mempty { o_result = F.Safe mempty }
+      | otherwise = do
+        whenNormal $ donePhase Loud "Extracted Core using GHC"
+        -- whenLoud  $ do putStrLn $ showpp info
+                     -- putStrLn "*************** Original CoreBinds ***************************"
+                     -- putStrLn $ render $ pprintCBs (cbs info)
+        whenNormal $ donePhase Loud "Transformed Core"
+        whenLoud  $ do donePhase Loud "transformRecExpr"
+                       putStrLn "*************** Transform Rec Expr CoreBinds *****************"
+                       putStrLn $ showCBs (untidyCore cfg) cbs'
+                       -- putStrLn $ render $ pprintCBs cbs'
+                       -- putStrLn $ showPpr cbs'
+        edcs <- newPrune cfg cbs' tgt info
+        liquidQueries cfg tgt info edcs
+
+    cfg :: Config
+    cfg  = getConfig info
+
+    tgt :: FilePath
+    tgt  = giTarget (giSrc info)
+
+    cbs' :: [CoreBind]
+    cbs' = giCbs (giSrc info)
 
 newPrune :: Config -> [CoreBind] -> FilePath -> TargetInfo -> IO (Either [CoreBind] [DC.DiffCheck])
 newPrune cfg cbs tgt info
@@ -288,11 +310,11 @@ makeFailErrors bs cis = [ mkError x | x <- bs, notElem (val x) vs ]
 
 splitFails :: S.HashSet Var -> F.FixResult (a, Cinfo) -> (F.FixResult (a, Cinfo),  [Cinfo])
 splitFails _ r@(F.Crash _ _) = (r,mempty)
-splitFails _ r@(F.Safe)      = (r,mempty)
-splitFails fs (F.Unsafe xs)  = (mkRes r, snd <$> rfails)
+splitFails _ r@(F.Safe _)    = (r,mempty)
+splitFails fs (F.Unsafe s xs)  = (mkRes r, snd <$> rfails)
   where 
     (rfails,r) = L.partition (Mb.maybe False (`S.member` fs) . ci_var . snd) xs 
-    mkRes [] = F.Safe
-    mkRes xs = F.Unsafe xs 
+    mkRes [] = F.Safe s
+    mkRes ys = F.Unsafe s ys 
 
   
