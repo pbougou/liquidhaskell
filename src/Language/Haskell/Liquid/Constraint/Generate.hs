@@ -1155,8 +1155,14 @@ dropConstraints _ t = return t
 cconsCase :: CGEnv -> Var -> SpecType -> [AltCon] -> (AltCon, [Var], CoreExpr) -> CG ()
 -------------------------------------------------------------------------------------
 cconsCase γ x t acs (ac, ys, ce)
-  = do cγ <- caseEnv γ x acs ac ys mempty
-       cconsE cγ ce t
+  = do  cγ <- caseEnv γ x acs ac ys mempty
+        case ce of 
+          pe@(Tick _ (Tick _ (Var v))) -> 
+            if isHoleVar v 
+              then do cγ' <- cγ += ("holeCase", F.symbol v, t) 
+                      cconsE cγ' ce t 
+              else cconsE cγ ce t 
+          pe' -> cconsE cγ ce t 
 
 {- 
 
