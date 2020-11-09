@@ -3,7 +3,7 @@
 {-@ LIQUID "--ple" @-}
 {-@ LIQUID "--typed-holes" @-}
 
-module Range where
+module MultipleHoles where
 
 import Language.Haskell.Liquid.Synthesize.Error
 
@@ -120,13 +120,20 @@ min' a b = if a <= b then a else b
       -> {post: ShipRange | betweenShip secret post && subsetShip post prior} 
   @-}
 adversary :: Ship -> ShipRange -> Bool -> ShipRange
-adversary = _g
+adversary secret shipRange b = 
+    case shipRange of
+        ShipRange range loc -> 
+            case range of 
+                IntRange l u -> 
+                    case b of
+                        True  -> ShipRange (IntRange (max _fifty l) u) loc
+                        False -> ShipRange (IntRange l (min fiftyOne u)) loc
 
--- adversary secret shipRange b = 
---   case shipRange of
---     ShipRange range loc -> 
---       case range of 
---         IntRange l u -> 
---           case b of
---             True  -> ShipRange (IntRange (max' fifty l) u) loc
---             False -> ShipRange (IntRange l (min' fiftyOne u)) loc
+-- adversarySound1 secret shipRange b = 
+--     case shipRange of
+--         ShipRange range loc -> 
+--             case range of 
+--                 IntRange l u -> 
+--                     case b of
+--                         True  -> ShipRange (IntRange (max' fifty l) u) loc
+--                         False -> ShipRange (IntRange l (min' fiftyOne u)) loc
