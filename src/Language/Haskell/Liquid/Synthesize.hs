@@ -37,13 +37,15 @@ import           Language.Fixpoint.Types.Visitor (mapKVars)
 import           TysWiredIn
 import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
 import           Data.Tuple.Extra
+import           Debug.Trace 
+import           Language.Haskell.Liquid.GHC.Play (isHoleVar)
 
 synthesize :: FilePath -> F.Config -> CGInfo -> IO [Error]
-synthesize tgt fcfg cginfo = 
+synthesize tgt fcfg cginfo = trace (" Entered [ synthesize ] ") $ 
   mapM go (M.toList $ holesMap cginfo)
   where 
     measures = map (val . msName) ((gsMeasures . gsData . giSpec . ghcI) cginfo)
-    go (x, HoleInfo _ loc env (cgi,cge)) = do 
+    go (x, HoleInfo rType loc env (cgi,cge)) = do 
       let topLvlBndr = fromMaybe (error "Top-level binder not found") (cgVar cge)
           typeOfTopLvlBnd = fromMaybe (error "Type: Top-level symbol not found") (M.lookup (symbol topLvlBndr) (reGlobal env))
           coreProgram = giCbs $ giSrc $ ghcI cgi
@@ -57,7 +59,8 @@ synthesize tgt fcfg cginfo =
           fs = map (snd . snd) $ M.toList (symbolToVar coreProgram topLvlBndr rEnvForalls)
 
           ssenv0 = symbolToVar coreProgram topLvlBndr fromREnv
-          (senv1, foralls') = initSSEnv typeOfTopLvlBnd cginfo ssenv0
+          noHoleVars = M.fromList (filter (\(_, (_, v)) -> not (isHoleVar v)) (M.toList ssenv0))
+          (senv1, foralls') = initSSEnv typeOfTopLvlBnd cginfo noHoleVars
           reflects = map symbol ((gsReflects . gsRefl . giSpec . ghcI) cginfo)
 
           cons = map ((map dataConWorkId) . tyConDataCons . fst) $ M.toList ((tcmTyRTy . tyConInfo) cginfo)
@@ -65,9 +68,14 @@ synthesize tgt fcfg cginfo =
       ctx <- SMT.makeContext fcfg tgt
       state0 <- initState ctx fcfg cgi cge env topLvlBndr (reverse uniVars) M.empty
       let foralls = foralls' ++ fs
-      fills <- synthesize' ctx cgi senv1 typeOfTopLvlBnd topLvlBndr typeOfTopLvlBnd foralls state0 (concat cons)
 
       -- let outMode = debugOut (getConfig cge)
+      let typeOfX = fromMaybe (error " type of hole not found ") (M.lookup (symbol x) (reGlobal env))
+      cgTy <- liftCG1 (consE cge (GHC.Var x)) cgi
+      fills <-  trace (" Hole name x = " ++ show x ++ 
+                       " type of x in HoleType " ++ show rType ++ 
+                       " type " ++ show typeOfTopLvlBnd) $ 
+                  synthesize' ctx cgi senv1 rType topLvlBndr typeOfTopLvlBnd foralls state0 (concat cons)
 
       return $ ErrHole loc (
         if not (null fills)
@@ -150,11 +158,17 @@ synthesizeBasic t = do
   -- HACK: If current scrutinee is boolean, case split on that first...
   scs <- scrutinees <$> get
   i <- caseIdx <$> get
-  if snd3 (scs !! i) == boolTy 
-    then synthesizeMatch t
-    else  do  es <- genTerms t
-              if null es  then synthesizeMatch t
-                          else return es
+  case safeIxScruts i scs of
+    Nothing ->
+      do  es <- genTerms t
+          if null es  then synthesizeMatch t
+                      else return es 
+    Just i  -> 
+      if snd3 (scs !! i) == boolTy 
+        then synthesizeMatch t
+        else  do  es <- genTerms t
+                  if null es  then synthesizeMatch t
+                              else return es
 
 fixScrutinees :: SpecType -> SM ()
 fixScrutinees t = do 

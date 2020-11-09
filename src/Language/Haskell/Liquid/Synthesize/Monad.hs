@@ -230,6 +230,25 @@ liftCG act = do
   return x 
 
 
+liftCG1 :: CG a -> CGInfo -> IO a 
+liftCG1 act cgi = do
+  let (x, cgi') = runState act cgi
+  return x
+
+liftCG2 :: (CGEnv -> CG CGEnv) -> CGEnv -> CGInfo -> IO (CGEnv, CGInfo)
+liftCG2 act cge cgi = do 
+  let (cge', cgi') = runState (act cge) cgi
+  return (cge', cgi')
+
+pushCG0 :: SSEnv -> CGEnv -> CGInfo -> IO (CGEnv, CGInfo)
+pushCG0 s cge cgi = pushCG (M.toList s) cge cgi
+
+pushCG :: [(Symbol, (SpecType, Var))] -> CGEnv -> CGInfo -> IO (CGEnv, CGInfo)
+pushCG []                 cge cgi = return (cge, cgi)
+pushCG ((s, (t, v)) : xs) cge cgi = do
+  (cge', cgi') <- liftCG2 (\e -> e += ("env", s, t)) cge cgi
+  pushCG xs cge' cgi'
+
 freshVarType :: Type -> SM Var
 freshVarType t = (\i -> mkVar (Just "x") i t) <$> incrSM
 
