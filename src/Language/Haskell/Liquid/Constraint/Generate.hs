@@ -76,6 +76,7 @@ import           Language.Haskell.Liquid.Transforms.CoreToLogic (weakenResult)
 import           Language.Haskell.Liquid.Bare.DataType (makeDataConChecker)
 
 import           Language.Haskell.Liquid.Types hiding (binds, Loc, loc, Def)
+import           Debug.Trace 
 
 --------------------------------------------------------------------------------
 -- | Constraint Generation: Toplevel -------------------------------------------
@@ -1155,8 +1156,19 @@ dropConstraints _ t = return t
 cconsCase :: CGEnv -> Var -> SpecType -> [AltCon] -> (AltCon, [Var], CoreExpr) -> CG ()
 -------------------------------------------------------------------------------------
 cconsCase γ x t acs (ac, ys, ce)
-  = do cγ <- caseEnv γ x acs ac ys mempty
-       cconsE cγ ce t
+  | typedHoles (getConfig γ) 
+    = do  cγ <- caseEnv γ x acs ac ys mempty
+          case ce of 
+            Tick _ (Tick _ (Var v)) ->
+              trace (" [ cconsCase ] v = " ++ show v ++ " type = " ++ show t) $  
+              if isHoleVar v 
+                then do cγ' <- cγ += ("holeCase", F.symbol v, t) 
+                        cconsE cγ' ce t 
+                else cconsE cγ ce t 
+            _ -> cconsE cγ ce t
+  | otherwise 
+    = do  cγ <- caseEnv γ x acs ac ys mempty
+          cconsE cγ ce t 
 
 {- 
 
