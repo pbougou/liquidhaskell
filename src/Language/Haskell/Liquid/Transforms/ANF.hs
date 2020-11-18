@@ -33,7 +33,8 @@ import qualified Language.Fixpoint.Types    as F
 
 import           Language.Haskell.Liquid.UX.Config  as UX
 import qualified Language.Haskell.Liquid.Misc       as Misc 
-import           Language.Haskell.Liquid.GHC.Misc   as GM
+import           Language.Haskell.Liquid.GHC.Misc
+import qualified Language.Haskell.Liquid.GHC.Misc   as GM
 import           Language.Haskell.Liquid.Transforms.Rec
 import           Language.Haskell.Liquid.Transforms.Rewrite
 import           Language.Haskell.Liquid.Types.Errors
@@ -44,6 +45,7 @@ import           Data.Maybe                       (fromMaybe)
 import           Data.List                        (sortBy, (\\))
 import           Data.Function                    (on)
 import qualified Text.Printf as Printf 
+import           Language.Haskell.Liquid.GHC.Play (isHoleVar)
 
 --------------------------------------------------------------------------------
 -- | A-Normalize a module ------------------------------------------------------
@@ -64,8 +66,73 @@ anormalize cfg hscEnv modGuts = do
       act      = Misc.concatMapM (normalizeTopBind γ0) rwr_cbs
       γ0       = emptyAnfEnv cfg
       rwr_cbs  = rewriteBinds cfg orig_cbs
-      orig_cbs = transformRecExpr $ mg_binds modGuts
+      orig_cbs = if typedHoles cfg 
+                  then whenHolesOn $ transformRecExpr (mg_binds modGuts)
+                  else transformRecExpr $ mg_binds modGuts
       untidy   = UX.untidyCore cfg
+
+whenHolesOn :: CoreProgram -> CoreProgram
+whenHolesOn [ ]
+  = [ ]
+whenHolesOn (x:xs) = 
+  case x of 
+    NonRec b e -> 
+      let e' = if hasHoles e 
+                then 
+                  let e' = transformHoleExpr e
+                  in  e' 
+                else e
+      in  NonRec b e' : whenHolesOn xs
+    cb -> cb : whenHolesOn xs 
+
+countLams :: CoreExpr -> Int -> (Int, CoreExpr)
+countLams (Lam _ e) i 
+  = countLams e (i+1)
+countLams e i = (i, e)
+
+countApps :: CoreExpr -> Int -> (Bool, CoreExpr)
+countApps (App e1 e2) i = 
+  countApps e1 (i-1)
+countApps e i 
+  | i == 0    = (True, e)
+  | otherwise = (False, e)
+
+unLam :: Int -> CoreExpr -> (Bool, CoreExpr)
+unLam i (Lam _ e) = unLam (i-1) e
+unLam i e | i == 0    = (True, e)
+          | otherwise = (False, e)
+
+topHole :: CoreExpr -> CoreExpr
+topHole e0 = 
+  let (i, e1) = countLams e0 0 
+      (b, e2) = countApps e1 i 
+      (b', e3) = if b then unLam i e2 else (False, e0)
+  in  if b' then e3 else e0
+
+transformHoleExpr :: CoreExpr -> CoreExpr 
+transformHoleExpr = topHole 
+
+hasHoles :: CoreExpr -> Bool 
+hasHoles (Var v) 
+  = isHoleVar v
+hasHoles (App e1 e2) 
+  = hasHoles e1 || hasHoles e2
+hasHoles (Lit _)
+  = False 
+hasHoles (Lam _ e) 
+  = hasHoles e 
+hasHoles (Let _ e) 
+  = hasHoles e
+hasHoles (Case _ _ _ cases) = 
+  foldr (\(_, _, e) a -> hasHoles e || a) False cases 
+hasHoles (Cast e _)
+  = hasHoles e
+hasHoles (Tick _ e)
+  = hasHoles e
+hasHoles (Type _)
+  = False 
+hasHoles (Coercion _) 
+  = False 
 
 {-
       m        = mgi_module modGuts
