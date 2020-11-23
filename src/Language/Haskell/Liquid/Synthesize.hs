@@ -35,6 +35,7 @@ import           CoreUtils (exprType)
 import           TyCoRep
 import           Language.Haskell.Liquid.GHC.Play
 import           Debug.Trace 
+import           Language.Fixpoint.Types.Visitor (mapKVars)
 
 synthesize :: FilePath -> F.Config -> CGInfo -> IO [Error]
 synthesize tgt fcfg cginfo = 
@@ -54,16 +55,17 @@ synthesize tgt fcfg cginfo =
           rEnvForalls = M.fromList (filter (isForall . toType . snd) (M.toList fromREnv))
           fs = map (snd . snd) $ M.toList (symbolToVar coreProgram topLvlBndr rEnvForalls)
 
-          ssenv0 = symbolToVar coreProgram topLvlBndr fromREnv
-          (senv1, foralls') = initSSEnv typeOfTopLvlBnd cginfo ssenv0
+          ssenv0' = symbolToVar coreProgram topLvlBndr fromREnv
+          ssenv0 = filter (\(_, (_, v)) -> not (isHoleVar v)) (M.toList ssenv0')
+          (senv1, foralls') = initSSEnv typeOfTopLvlBnd cginfo (M.fromList ssenv0)
       
       ctx <- SMT.makeContext fcfg tgt
       state0 <- initState ctx fcfg cgi cge env topLvlBndr (reverse uniVars) M.empty
       let foralls = foralls' ++ fs
-          todo = if tracepp " MAIN FLAG " (findDef coreProgram topLvlBndr) then typeOfTopLvlBnd else rType
+          todo = if tracepp " MAIN FLAG " (findDef coreProgram topLvlBndr) then typeOfTopLvlBnd else tracepp " HOLE TYPE " rType
       fills <- synthesize' ctx cgi senv1 todo topLvlBndr typeOfTopLvlBnd foralls state0
 
-      trace (" SYNTHESIS RType: " ++ show todo) $
+      trace (" SYNTHESIS TODO Type: " ++ show todo ++ " RType " ++ show rType) $
         return $ ErrHole loc (
           if not (null fills)
             then text "\n Hole Fills:" $+$ pprintMany (map (coreToHs typeOfTopLvlBnd topLvlBndr . fromAnf) fills)
@@ -73,10 +75,10 @@ findDef :: GHC.CoreProgram -> Var -> Bool
 findDef []     _ = False
 findDef (x:xs) v = 
   case x of 
-    GHC.NonRec b e ->  
+    bnd@(GHC.NonRec b e) ->  
       let (f, e1) = topHole e 
       in  if v == b 
-            then (f && holeForm e1) || findDef xs v
+            then trace (" FIND DEF Expr = " ++ showpp bnd) $ (f && holeForm e1) || findDef xs v
             else findDef xs v 
     _ -> findDef xs v
 
@@ -105,12 +107,15 @@ topHole :: CoreExpr -> (Bool, CoreExpr)
 topHole e0 = 
   let (i, e1) = countLams e0 0 
       (b, e2) = countApps e1 i 
-  in  if b  then  case e2 of 
-                    (GHC.Let _ (GHC.Let _ e3)) -> 
-                      let (flag, e4) = unLam i e3
-                      in  (flag, e4)
-                    _ -> (False, e2)
-            else  (False, e2)
+  in  notrace (" [ topHole ] e0 = " ++ show e0 ++
+              "\ne1 " ++ show e1 ++ " i = " ++ show i ++
+              "\ne2 " ++ show e2 ++ " b = " ++ show b) $ 
+        if b  then  case e2 of 
+                        (GHC.Let _ (GHC.Let _ e3)) -> 
+                          let (flag, e4) = unLam i e3
+                          in  (flag, e4)
+                        _ -> (False, e2)
+                else  (False, e2)
 
 synthesize' :: SMT.Context -> CGInfo -> SSEnv -> SpecType ->  Var -> SpecType -> [Var] -> SState -> IO [CoreExpr]
 synthesize' ctx cgi senv tx xtop ttop foralls st2
@@ -204,8 +209,8 @@ matchOnExpr t (GHC.Var v, tx, c)
   = matchOn t (v, tx, c)
 matchOnExpr t (e, tx, c)
   = do  freshV <- freshVarType tx
-        freshSpecTy <- liftCG $ trueTy tx
-        -- use consE
+        freshSpecTy' <- liftCG $ trueTy tx
+        let freshSpecTy = mapExprReft (const $ mapKVars (\_ -> Just PTrue)) freshSpecTy'
         addEnv freshV freshSpecTy
         es <- matchOn t (freshV, tx, c)
         return $ GHC.Let (GHC.NonRec freshV e) <$> es
