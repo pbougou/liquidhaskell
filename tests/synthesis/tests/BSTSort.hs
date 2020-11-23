@@ -7,8 +7,8 @@ import Language.Haskell.Liquid.Synthesize.Error
 
 
 {-@ data BST [size] a = 
-      Empty 
-    | Node { x :: a, l :: BST { v: a | v < x }, r :: BST { v: a | x < v } } 
+        Empty 
+      | Node { x :: a, l :: BST { v: a | v < x }, r :: BST { v: a | x < v } } 
   @-}
 data BST a = Empty | Node a (BST a) (BST a)
 

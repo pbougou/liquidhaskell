@@ -15,13 +15,13 @@ length' (C _ xs) = 1 + length' xs
 
 
 {-@ appendL :: x: L a -> y: L a -> 
-    { v: L a | length' v == length' x + length' y } 
+      { v: L a | length' v == length' x + length' y } 
   @-}
 appendL N        y = y
 appendL (C x xs) y = C x (appendL xs y)
 
 {-@ append :: xs: L a -> ys: L a -> 
-    { v: L a | length' v == length' xs + length' ys } 
+      { v: L a | length' v == length' xs + length' ys } 
   @-}
 append :: L a -> L a -> L a
 append = _goal

@@ -5,8 +5,8 @@ module TreeOne where
 import Language.Haskell.Liquid.Synthesize.Error
 
 {-@ data Tree [size] a = 
-      Empty 
-    | Node { x:: a, l:: (Tree a), r:: (Tree a) } 
+        Empty 
+      | Node { x:: a, l:: (Tree a), r:: (Tree a) } 
   @-}
 data Tree a = Empty | Node a (Tree a) (Tree a)
 
