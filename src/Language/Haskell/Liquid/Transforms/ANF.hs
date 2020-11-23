@@ -67,7 +67,8 @@ anormalize cfg hscEnv modGuts = do
       γ0       = emptyAnfEnv cfg
       rwr_cbs  = rewriteBinds cfg orig_cbs
       orig_cbs = if typedHoles cfg 
-                  then whenHolesOn $ transformRecExpr (mg_binds modGuts)
+                  then  let e = (transformRecExpr $ mg_binds modGuts) 
+                        in  trace (" TRANSFORM REC EXPR " ++ GM.showPpr e) whenHolesOn e
                   else transformRecExpr $ mg_binds modGuts
       untidy   = UX.untidyCore cfg
 
@@ -80,7 +81,7 @@ whenHolesOn (x:xs) =
       let e' = if hasHoles e 
                 then 
                   let e' = transformHoleExpr e
-                  in  e' 
+                  in  trace (" ANF Expr = " ++ GM.showPpr e ++ "\nTRANSFORM " ++ GM.showPpr e' ++ "\n\n") e' 
                 else e
       in  NonRec b e' : whenHolesOn xs
     cb -> cb : whenHolesOn xs 
