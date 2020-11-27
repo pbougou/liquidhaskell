@@ -29,7 +29,8 @@ import           TyCoRep
 -- Generate terms that have type t: This changes the @ExprMemory@ in @SM@ state.
 -- Return expressions type checked against type @specTy@.
 genTerms :: SpecType -> SM [CoreExpr] 
-genTerms = genTerms' ResultMode 
+genTerms t = 
+  trace (" genTerms t " ++ show t) $ genTerms' ResultMode t
 
 
 data SearchMode 
@@ -50,11 +51,12 @@ genTerms' i specTy =
       es0   <- structuralCheck es
 
       err <- checkError specTy 
-      case err of 
-        Nothing ->
-          filterElseM (hasType specTy) es0 $ 
-            withDepthFill i specTy 0 fnTys
-        Just e -> return [e]
+      trace (" Expressions es " ++ show es) $
+        case err of 
+          Nothing ->
+            filterElseM (hasType specTy) es0 $ 
+              withDepthFill i specTy 0 fnTys
+          Just e -> return [e]
 
 genArgs :: SpecType -> SM [CoreExpr]
 genArgs t =

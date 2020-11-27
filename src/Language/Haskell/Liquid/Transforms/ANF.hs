@@ -68,7 +68,7 @@ anormalize cfg hscEnv modGuts = do
       rwr_cbs  = rewriteBinds cfg orig_cbs
       orig_cbs = if typedHoles cfg 
                   then  let e = (transformRecExpr $ mg_binds modGuts) 
-                        in  trace (" TRANSFORM REC EXPR " ++ GM.showPpr e) whenHolesOn e
+                        in  {- trace (" TRANSFORM REC EXPR " ++ GM.showPpr e) -} whenHolesOn e
                   else transformRecExpr $ mg_binds modGuts
       untidy   = UX.untidyCore cfg
 
@@ -103,12 +103,26 @@ unLam i (Lam _ e) = unLam (i-1) e
 unLam i e | i == 0    = (True, e)
           | otherwise = (False, e)
 
+eliminateLets :: CoreExpr -> CoreExpr 
+eliminateLets (Let _ e) = eliminateLets e
+eliminateLets e = e
+
+eliminateTicks :: CoreExpr -> CoreExpr 
+eliminateTicks (Lam a e) = Lam a (eliminateTicks e)
+eliminateTicks (Case e b t cs) = Case (eliminateTicks e) b t (map (\(alt, vs, e) -> (alt, vs, eliminateTicks e)) cs)
+eliminateTicks (Tick _ e) = eliminateTicks e
+eliminateTicks (App e1 e2) = App (eliminateTicks e1) (eliminateTicks e2)
+eliminateTicks (Let b e) = Let b (eliminateTicks e)
+eliminateTicks (Var v) = Var v
+eliminateTicks (Lit l) = Lit l
+eliminateTicks e = e
+
 topHole :: CoreExpr -> CoreExpr
 topHole e0 = 
   let (i, e1) = countLams e0 0 
       (b, e2) = countApps e1 i 
-      (b', e3) = if b then unLam i e2 else (False, e0)
-  in  if b' then e3 else e0
+      (b', e3) = if b then let (b, e4) = unLam i e2 in (b, eliminateLets e4) else (False, e0)
+  in  if b' then e3 else eliminateTicks (eliminateLets $ snd (unLam i e2))
 
 transformHoleExpr :: CoreExpr -> CoreExpr 
 transformHoleExpr = topHole 

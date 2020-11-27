@@ -25,6 +25,7 @@ import           TysWiredIn
 
 import           Data.List
 import           Data.List.Split
+import           Debug.Trace
 
 instance Default Type where
     def = TyVarTy alphaTyVar 
@@ -375,9 +376,9 @@ getBody (GHC.Rec _)   _ = error "Assuming our top-level binder is non-recursive 
 --                       | Current top-level binder |
 varsP :: GHC.CoreProgram -> Var -> (GHC.CoreExpr -> [Var]) -> [Var]
 varsP cp tlVar f = 
-  case filter (\cb -> isInCB cb tlVar) cp of
+  case filter (`isInCB` tlVar) cp of
     [cb] -> varsCB cb f
-    _    -> error " Every top-level corebind must be unique! "
+    _    -> error " Every top-level core bind must be unique! "
 
 isInCB :: GHC.CoreBind -> Var -> Bool
 isInCB (GHC.NonRec b _) tlVar = b == tlVar 
@@ -401,18 +402,26 @@ caseVarsE (GHC.Case _ b _ alts) = foldr (\(_, _, e) res -> caseVarsE e ++ res) [
 caseVarsE (GHC.Tick _ e) = caseVarsE e 
 caseVarsE _ = [] 
 
+allVars :: GHC.CoreExpr -> [Var]
+allVars (GHC.Lam a e) = a : allVars e
+allVars (GHC.Let (GHC.NonRec v0 e0) e1) = allVars e1
+allVars (GHC.Case _ b _ alts) = foldr (\(_, bs, e) res -> bs ++ allVars e ++ res) [b] alts 
+allVars (GHC.Tick _ e) = allVars e
+allVars (GHC.App e1 e2) = allVars e1 ++ allVars e2
+allVars _ = []
+
 instance Default Var where
   def = alphaTyVar
 
 symbolToVar :: GHC.CoreProgram -> Var -> M.HashMap Symbol SpecType -> SSEnv
 symbolToVar cp tlBndr renv = 
-  let vars = [(F.symbol x, x) | x <- varsP cp tlBndr varsE]
+  let vars = [(F.symbol x, x) | x <- varsP cp tlBndr allVars]
       casevars = [F.symbol x | x <- varsP cp tlBndr caseVarsE]
       tlVars = [(F.symbol x, x) | x <- getTopLvlBndrs cp]
       lookupErrorMsg x = " [ symbolToVar ] impossible lookup for x = " ++ show x
       symbolVar x = fromMaybe (fromMaybe (error (lookupErrorMsg x)) $ lookup x tlVars) $ lookup x vars
       renv' = foldr M.delete renv casevars
-  in  M.fromList [ (s, (t, symbolVar s)) | (s, t) <- M.toList renv']
+  in  trace (" symbolToVar vars " ++ show vars ++ "\nR-ENV " ++ show renv') $ M.fromList [ (s, (t, symbolVar s)) | (s, t) <- M.toList renv']
 
 argsP :: GHC.CoreProgram -> Var -> [Var] 
 argsP []         tlVar = error $ " [ argsP ] " ++ show tlVar

@@ -36,7 +36,7 @@ import           TyCoRep
 import           Language.Haskell.Liquid.GHC.Play
 import           Debug.Trace 
 import           Language.Fixpoint.Types.Visitor (mapKVars)
-
+import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
 synthesize :: FilePath -> F.Config -> CGInfo -> IO [Error]
 synthesize tgt fcfg cginfo = 
   mapM go (M.toList $ holesMap cginfo)
@@ -55,14 +55,14 @@ synthesize tgt fcfg cginfo =
           rEnvForalls = M.fromList (filter (isForall . toType . snd) (M.toList fromREnv))
           fs = map (snd . snd) $ M.toList (symbolToVar coreProgram topLvlBndr rEnvForalls)
 
-          ssenv0' = symbolToVar coreProgram topLvlBndr fromREnv
+          ssenv0' = symbolToVar coreProgram topLvlBndr (tracepp " FROM R-ENV " fromREnv)
           ssenv0 = filter (\(_, (_, v)) -> not (isHoleVar v)) (M.toList ssenv0')
           (senv1, foralls') = initSSEnv typeOfTopLvlBnd cginfo (M.fromList ssenv0)
       
       ctx <- SMT.makeContext fcfg tgt
       state0 <- initState ctx fcfg cgi cge env topLvlBndr (reverse uniVars) M.empty
       let foralls = foralls' ++ fs
-          todo = if tracepp " MAIN FLAG " (findDef coreProgram topLvlBndr) then typeOfTopLvlBnd else tracepp " HOLE TYPE " rType
+          todo = if tracepp (" SYNTHESIS ENV " ++ show (map (\(_, (t, v)) -> v) (M.toList senv1)) ++ "\nMAIN FLAG ") (findDef coreProgram topLvlBndr) then typeOfTopLvlBnd else tracepp " HOLE TYPE " rType
       fills <- synthesize' ctx cgi senv1 todo topLvlBndr typeOfTopLvlBnd foralls state0
 
       trace (" SYNTHESIS TODO Type: " ++ show todo ++ " RType " ++ show rType) $
@@ -78,7 +78,7 @@ findDef (x:xs) v =
     bnd@(GHC.NonRec b e) ->  
       let (f, e1) = topHole e 
       in  if v == b 
-            then trace (" FIND DEF Expr = " ++ showpp bnd) $ (f && holeForm e1) || findDef xs v
+            then notrace (" FIND DEF Expr = " ++ showpp bnd) $ (f && holeForm e1) || findDef xs v
             else findDef xs v 
     _ -> findDef xs v
 
@@ -131,17 +131,19 @@ synthesize' ctx cgi senv tx xtop ttop foralls st2
       let coreProgram = giCbs $ giSrc $ ghcI cgi
           args  = drop 1 (argsP coreProgram xtop)
           (_, (xs, txs, _), _) = bkArrow ttop
-      addEnv xtop $ decrType xtop ttop args (zip xs txs)
+          dt = decrType xtop ttop args (zip xs txs)
+      trace (" GO xtop " ++ show xtop ++ " Decreasing " ++ show dt) $ addEnv xtop dt 
 
       if R.isNumeric (tyConEmbed cgi) c
           then error " [ Numeric in synthesize ] Update liquid fixpoint. "
           else do let ts = unifyWith (toType t)
-                  if null ts  then modify (\s -> s { sUGoalTy = Nothing } )
-                              else modify (\s -> s { sUGoalTy = Just ts } )
+                  trace (" SYNTHESIS RApp t = " ++ show t ++ " types " ++ show (map showTy ts)) $
+                    if null ts  then modify (\s -> s { sUGoalTy = Nothing } )
+                                else modify (\s -> s { sUGoalTy = Just ts } )
                   modify (\s -> s {sForalls = (foralls, [])})
                   emem0 <- insEMem0 senv
                   modify (\s -> s { sExprMem = emem0 })
-                  synthesizeBasic t
+                  trace (" SYNTHESIS EMem " ++ showEmem emem0) $ synthesizeBasic t
 
     go (RAllP _ t) = go t
 
