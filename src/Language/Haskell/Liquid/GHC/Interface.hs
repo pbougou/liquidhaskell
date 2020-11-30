@@ -130,7 +130,7 @@ import Language.Haskell.Liquid.UX.CmdLine
 import Language.Haskell.Liquid.UX.QuasiQuoter
 import Language.Haskell.Liquid.UX.Tidy
 import Language.Fixpoint.Utils.Files
-
+import Debug.Trace
 import Optics
 
 import qualified Debug.Trace as Debug 
@@ -497,7 +497,7 @@ makeGhcSrc cfg file typechecked modSum = do
 
   let modGuts        = makeMGIModGuts modGuts'
   hscEnv            <- getSession
-  coreBinds         <- liftIO $ anormalize cfg hscEnv modGuts'
+  coreBinds         <- liftIO $ anormalize cfg hscEnv (trace (" Core Binds " ++ showpp (mg_binds modGuts')) modGuts')
   _                 <- liftIO $ whenNormal $ Misc.donePhase Misc.Loud "A-Normalization"
   let dataCons       = concatMap (map dataConWorkId . tyConDataCons) (mgi_tcs modGuts)
   (fiTcs, fiDcs)    <- makeFamInstEnv <$> liftIO (getFamInstances hscEnv)
@@ -519,7 +519,9 @@ makeGhcSrc cfg file typechecked modSum = do
     { _giIncDir    = incDir 
     , _giTarget    = file
     , _giTargetMod = ModName Target (moduleName (ms_mod modSum))
-    , _giCbs       = coreBinds
+    , _giCbs       =  if typedHoles cfg 
+                        then trace (" [ makeGhcSrc ] " ++ showpp (whenHolesOn coreBinds)) $ whenHolesOn coreBinds 
+                        else coreBinds
     , _giImpVars   = impVars 
     , _giDefVars   = dataCons ++ (letVars coreBinds) 
     , _giUseVars   = readVars coreBinds
