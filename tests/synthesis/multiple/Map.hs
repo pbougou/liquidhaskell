@@ -8,7 +8,7 @@ import Language.Haskell.Liquid.Synthesize.Error
 myMap :: (a -> b) -> [a] -> [b]
 myMap f xs0 = 
     case xs0 of 
-        [] -> []
+        [] -> _empty_hole
         (x:xs) -> _other
 -- map f [] = []
 -- map f (x:xs) = f x : map f xs
