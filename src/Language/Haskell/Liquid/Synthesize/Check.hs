@@ -29,15 +29,18 @@ import           Language.Haskell.Liquid.GHC.TypeRep
 import           Language.Haskell.Liquid.Types
 import           MkCore
 import           DynFlags
-
-hasType :: SpecType -> CoreExpr -> SM Bool
-hasType t !e' = notrace (" [ Check ] " ++ show e') $ do 
+import           Debug.Trace
+hasType :: String -> SpecType -> CoreExpr -> SM Bool
+hasType s t !e' = notrace (" [ Check ] " ++ show e') $ do 
   x  <- freshVar t 
   st <- get 
   let tpOfE = exprType e'
       ht    = toType t
   if tpOfE == ht
-    then liftIO $ quietly $ check (sCGI st) (sCGEnv st) (sFCfg st) x e (Just t) 
+    then do 
+      res <- liftIO $ quietly $ check (sCGI st) (sCGEnv st) (sFCfg st) x e (Just t)
+      trace (" [ hasType ] " ++ s ++ " For expr " ++ show e' ++ " Checked type " ++ show t ++ " Res " ++ show res) $
+        return res 
     else error $ " [ hasType ] Expression = " ++ show e' ++ " with type " ++ showTy tpOfE ++ " , specType = " ++ show t
  where e = tx e' 
 
@@ -45,7 +48,7 @@ hasType t !e' = notrace (" [ Check ] " ++ show e') $ do
 isWellTyped :: CoreExpr -> SM Bool
 isWellTyped e =  do 
   t <- liftCG $ trueTy $ exprType e 
-  hasType t e 
+  hasType "well" t e 
 
 
 tx :: CoreExpr -> CoreExpr
@@ -83,7 +86,7 @@ checkError t = do
   errVar <- varError
   let errorExpr = App (App (Var errVar) (Type (toType t))) errorInt
       errorInt  = mkIntExprInt unsafeGlobalDynFlags 42
-  b <- hasType t errorExpr
+  b <- hasType " error " t errorExpr
   if b 
     then return $ Just errorExpr
     else return Nothing

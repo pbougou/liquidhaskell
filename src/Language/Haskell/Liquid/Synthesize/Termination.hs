@@ -10,9 +10,10 @@ import qualified Language.Haskell.Liquid.Types.RefType
                                                as R
 import qualified Language.Fixpoint.Types       as F
 import           Var
+import Debug.Trace
 
 decrType :: Var -> SpecType -> [Var] -> [(F.Symbol, SpecType)] -> SpecType
-decrType _x ti xs _xts =
+decrType _x ti xs _xts = trace (" Decr Type " ++ show ti ++ " args " ++ show xs) $ 
   go xs ti 
   where
     go (v:_) (RFun x tx t r) 

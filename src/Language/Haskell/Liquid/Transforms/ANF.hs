@@ -79,9 +79,7 @@ whenHolesOn (x:xs) =
   case x of 
     NonRec b e -> 
       let e' = if hasHoles e 
-                then 
-                  let e' = transformHoleExpr e
-                  in  {- trace (" ANF Expr = " ++ GM.showPpr e ++ "\nTRANSFORM " ++ GM.showPpr e' ++ "\n\n") -} e' 
+                then transformHoleExpr e
                 else e
       in  NonRec b e' : whenHolesOn xs
     cb -> cb : whenHolesOn xs 
@@ -92,58 +90,34 @@ countLams (Lam _ e) i
 countLams e i = (i, e)
 
 countApps :: CoreExpr -> Int -> (Bool, CoreExpr)
-countApps (App e1 e2) i = 
+countApps (App e1 _) i = 
   countApps e1 (i-1)
 countApps e i 
   | i == 0    = (True, e)
   | otherwise = (False, e)
 
-unLam :: Int -> CoreExpr -> (Bool, CoreExpr)
-unLam i (Lam _ e) = unLam (i-1) e
-unLam i e | i == 0    = (True, e)
-          | otherwise = (False, e)
-
-eliminateLets :: CoreExpr -> CoreExpr 
-eliminateLets (Let _ e) = eliminateLets e
-eliminateLets e = e
-
-eliminateTicks :: CoreExpr -> CoreExpr 
-eliminateTicks (Lam a e) = Lam a (eliminateTicks e)
-eliminateTicks (Case e b t cs) = Case (eliminateTicks e) b t (map (\(alt, vs, e) -> (alt, vs, eliminateTicks e)) cs)
-eliminateTicks (Tick _ e) = eliminateTicks e
-eliminateTicks (App e1 e2) = App (eliminateTicks e1) (eliminateTicks e2)
-eliminateTicks (Let b e) = Let b (eliminateTicks e)
-eliminateTicks (Var v) = Var v
-eliminateTicks (Lit l) = Lit l
-eliminateTicks e = e
-
-eliminateApps :: CoreExpr -> CoreExpr 
-eliminateApps (App e1 e2) = eliminateApps e1
-eliminateApps e = e
-
 getInnerExpr :: CoreExpr -> CoreExpr 
-getInnerExpr (Lam a e) = Lam (trace (" LAM Var " ++ show a) a) (getInnerExpr e)
+getInnerExpr (Lam a e) = Lam a (getInnerExpr e)
 getInnerExpr (App e1 e2) = getInnerExpr e1
 getInnerExpr e = e
 
 eliminateInnerLams :: Int -> Int -> CoreExpr -> CoreExpr 
-eliminateInnerLams i j (Lam a e) = if j > 0 then Lam a (eliminateInnerLams i (j-1) e) else checkTransform i (Lam a e)
-eliminateInnerLams i j (Let b e) = Let b (eliminateInnerLams i j e)
-eliminateInnerLams i j e = trace (" Eliminate Inner Lams " ++ GM.showPpr e) $ checkTransform i e
+eliminateInnerLams i j (Lam a e) 
+  = if j > 0 then Lam a (eliminateInnerLams i (j-1) e) else checkTransform i (Lam a e)
+eliminateInnerLams i j (Let b e) 
+  = Let b (eliminateInnerLams i j e)
+eliminateInnerLams i j e 
+  = checkTransform i e
 
 checkTransform :: Int -> CoreExpr -> CoreExpr
 checkTransform i (Lam a e) = if i > 0 then checkTransform (i-1) e else Lam a e
-checkTransform i e = trace (" CHECK TRANSFORM " ++ show i) e 
+checkTransform i e = e 
 
 topHole :: CoreExpr -> CoreExpr
 topHole e0 = 
   let (i, e1) = countLams e0 0 
-      (b, e2) = countApps e1 i 
-      (b', e3) = if b then let (b, e4) = unLam i e2 in (b, eliminateLets e4) else (False, e0)
-      transformed = eliminateInnerLams i i $ getInnerExpr e0
-  in  
-    trace (" LAMBDAS " ++ show i ++ " APPS " ++ show b ++ " Expr " ++ GM.showPpr (eliminateInnerLams i i $ getInnerExpr e0)) $
-      transformed -- if b' then e3 else e0 -- eliminateTicks (eliminateLets $ snd (unLam i e0))
+      (b, _) = countApps e1 i 
+  in  eliminateInnerLams i i $ getInnerExpr e0 
 
 transformHoleExpr :: CoreExpr -> CoreExpr 
 transformHoleExpr = topHole 

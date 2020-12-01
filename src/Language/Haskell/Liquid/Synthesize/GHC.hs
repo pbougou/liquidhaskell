@@ -421,7 +421,7 @@ symbolToVar cp tlBndr renv =
       lookupErrorMsg x = " [ symbolToVar ] impossible lookup for x = " ++ show x
       symbolVar x = fromMaybe (fromMaybe (error (lookupErrorMsg x)) $ lookup x tlVars) $ lookup x vars
       renv' = foldr M.delete renv casevars
-  in  trace (" symbolToVar vars " ++ show vars ++ "\nR-ENV " ++ show renv') $ M.fromList [ (s, (t, symbolVar s)) | (s, t) <- M.toList renv']
+  in  M.fromList [ (s, (t, symbolVar s)) | (s, t) <- M.toList renv']
 
 argsP :: GHC.CoreProgram -> Var -> [Var] 
 argsP []         tlVar = error $ " [ argsP ] " ++ show tlVar
