@@ -132,7 +132,9 @@ synthesize' ctx cgi senv tx xtop ttop foralls st2
           args  = drop 1 (argsP coreProgram xtop)
           (_, (xs, txs, _), _) = bkArrow ttop
           dt = decrType xtop ttop args (zip xs txs)
-      trace (" GO xtop " ++ show xtop ++ " Decreasing " ++ show dt) $ addEnv xtop dt 
+      addEnv xtop dt
+      addEmem xtop dt  
+      senv1 <- getSEnv 
 
       if R.isNumeric (tyConEmbed cgi) c
           then error " [ Numeric in synthesize ] Update liquid fixpoint. "
@@ -141,7 +143,7 @@ synthesize' ctx cgi senv tx xtop ttop foralls st2
                     if null ts  then modify (\s -> s { sUGoalTy = Nothing } )
                                 else modify (\s -> s { sUGoalTy = Just ts } )
                   modify (\s -> s {sForalls = (foralls, [])})
-                  emem0 <- insEMem0 senv
+                  emem0 <- insEMem0 senv1
                   modify (\s -> s { sExprMem = emem0 })
                   trace (" SYNTHESIS EMem " ++ showEmem emem0) $ synthesizeBasic t
 
