@@ -55,14 +55,14 @@ synthesize tgt fcfg cginfo =
           rEnvForalls = M.fromList (filter (isForall . toType . snd) (M.toList fromREnv))
           fs = map (snd . snd) $ M.toList (symbolToVar coreProgram topLvlBndr rEnvForalls)
 
-          ssenv0' = symbolToVar coreProgram topLvlBndr (tracepp " FROM R-ENV " fromREnv)
+          ssenv0' = symbolToVar coreProgram topLvlBndr fromREnv
           ssenv0 = filter (\(_, (_, v)) -> not (isHoleVar v)) (M.toList ssenv0')
           (senv1, foralls') = initSSEnv typeOfTopLvlBnd cginfo (M.fromList ssenv0)
       
       ctx <- SMT.makeContext fcfg tgt
       state0 <- initState ctx fcfg cgi cge env topLvlBndr (reverse uniVars) M.empty
       let foralls = foralls' ++ fs
-          todo = if tracepp (" SYNTHESIS ENV " ++ show (map (\(_, (t, v)) -> v) (M.toList senv1)) ++ "\nMAIN FLAG ") (findDef coreProgram topLvlBndr) then typeOfTopLvlBnd else tracepp " HOLE TYPE " rType
+          todo = if findDef coreProgram topLvlBndr then typeOfTopLvlBnd else tracepp " HOLE TYPE " rType
       fills <- synthesize' ctx cgi senv1 todo topLvlBndr typeOfTopLvlBnd foralls state0
 
       trace (" SYNTHESIS TODO Type: " ++ show todo ++ " RType " ++ show rType) $
@@ -107,15 +107,12 @@ topHole :: CoreExpr -> (Bool, CoreExpr)
 topHole e0 = 
   let (i, e1) = countLams e0 0 
       (b, e2) = countApps e1 i 
-  in  notrace (" [ topHole ] e0 = " ++ show e0 ++
-              "\ne1 " ++ show e1 ++ " i = " ++ show i ++
-              "\ne2 " ++ show e2 ++ " b = " ++ show b) $ 
-        if b  then  case e2 of 
-                        (GHC.Let _ (GHC.Let _ e3)) -> 
-                          let (flag, e4) = unLam i e3
-                          in  (flag, e4)
-                        _ -> (False, e2)
-                else  (False, e2)
+  in  if b  then  case e2 of 
+                    (GHC.Let _ (GHC.Let _ e3)) -> 
+                      let (flag, e4) = unLam i e3
+                      in  (flag, e4)
+                    _ -> (False, e2)
+            else  (False, e2)
 
 synthesize' :: SMT.Context -> CGInfo -> SSEnv -> SpecType ->  Var -> SpecType -> [Var] -> SState -> IO [CoreExpr]
 synthesize' ctx cgi senv tx xtop ttop foralls st2
@@ -129,7 +126,7 @@ synthesize' ctx cgi senv tx xtop ttop foralls st2
           
     go t@(RApp c _ts _ _r) = do  
       let coreProgram = giCbs $ giSrc $ ghcI cgi
-          args  = drop 1 (argsP coreProgram xtop)
+          args  = filter (not . isTyVar) (drop 1 (argsP coreProgram xtop))
           (_, (xs, txs, _), _) = bkArrow ttop
           dt = decrType xtop ttop args (zip xs txs)
       addEnv xtop dt
@@ -145,7 +142,7 @@ synthesize' ctx cgi senv tx xtop ttop foralls st2
                   modify (\s -> s {sForalls = (foralls, [])})
                   emem0 <- insEMem0 senv1
                   modify (\s -> s { sExprMem = emem0 })
-                  trace (" SYNTHESIS EMem " ++ showEmem emem0) $ synthesizeBasic t
+                  trace (" SYNTHESIS EMem " ++ showEmem emem0 ++ "\nSYNTHESIS ENV" ++ show senv1) $ synthesizeBasic t
 
     go (RAllP _ t) = go t
 
@@ -188,7 +185,7 @@ synthesizeBasic t = do
               else return es
 
 synthesizeMatch :: SpecType -> SM [CoreExpr]
-synthesizeMatch t = do
+synthesizeMatch t = trace (" Entered synthesizeMatch for t " ++ show t) $ do
   scruts <- scrutinees <$> get
   i <- incrCase 
   case safeIxScruts i scruts of
