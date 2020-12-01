@@ -62,10 +62,10 @@ synthesize tgt fcfg cginfo =
       ctx <- SMT.makeContext fcfg tgt
       state0 <- initState ctx fcfg cgi cge env topLvlBndr (reverse uniVars) M.empty
       let foralls = foralls' ++ fs
-          todo = if findDef coreProgram topLvlBndr then typeOfTopLvlBnd else tracepp " HOLE TYPE " rType
+          todo = if findDef coreProgram topLvlBndr then typeOfTopLvlBnd else rType
       fills <- synthesize' ctx cgi senv1 todo topLvlBndr typeOfTopLvlBnd foralls state0
 
-      trace (" SYNTHESIS TODO Type: " ++ show todo ++ " RType " ++ show rType) $
+      notrace (" SYNTHESIS TODO Type: " ++ show todo ++ " RType " ++ show rType) $
         return $ ErrHole loc (
           if not (null fills)
             then text "\n Hole Fills:" $+$ pprintMany (map (coreToHs typeOfTopLvlBnd topLvlBndr . fromAnf) fills)
@@ -136,13 +136,12 @@ synthesize' ctx cgi senv tx xtop ttop foralls st2
       if R.isNumeric (tyConEmbed cgi) c
           then error " [ Numeric in synthesize ] Update liquid fixpoint. "
           else do let ts = unifyWith (toType t)
-                  trace (" SYNTHESIS RApp t = " ++ show t ++ " types " ++ show (map showTy ts)) $
-                    if null ts  then modify (\s -> s { sUGoalTy = Nothing } )
-                                else modify (\s -> s { sUGoalTy = Just ts } )
+                  if null ts  then modify (\s -> s { sUGoalTy = Nothing } )
+                              else modify (\s -> s { sUGoalTy = Just ts } )
                   modify (\s -> s {sForalls = (foralls, [])})
                   emem0 <- insEMem0 senv1
                   modify (\s -> s { sExprMem = emem0 })
-                  trace (" SYNTHESIS EMem " ++ showEmem emem0 ++ "\nSYNTHESIS ENV" ++ show senv1) $ synthesizeBasic t
+                  synthesizeBasic t
 
     go (RAllP _ t) = go t
 
@@ -165,7 +164,7 @@ synthesize' ctx cgi senv tx xtop ttop foralls st2
               modify (\s -> s { sForalls = (foralls, []) } )
               emem0 <- insEMem0 senv1
               modify (\s -> s { sExprMem = emem0 })
-              mapM_ (\y -> addDecrTerm y []) ys
+              mapM_ (`addDecrTerm` []) ys
               scruts <- synthesizeScrut ys
               modify (\s -> s { scrutinees = scruts })
               GHC.mkLams ys <$$> synthesizeBasic goalType
@@ -185,7 +184,7 @@ synthesizeBasic t = do
               else return es
 
 synthesizeMatch :: SpecType -> SM [CoreExpr]
-synthesizeMatch t = trace (" Entered synthesizeMatch for t " ++ show t) $ do
+synthesizeMatch t = do
   scruts <- scrutinees <$> get
   i <- incrCase 
   case safeIxScruts i scruts of

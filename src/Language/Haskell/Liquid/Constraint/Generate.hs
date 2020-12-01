@@ -1160,42 +1160,8 @@ dropConstraints _ t = return t
 cconsCase :: CGEnv -> Var -> SpecType -> [AltCon] -> (AltCon, [Var], CoreExpr) -> CG ()
 -------------------------------------------------------------------------------------
 cconsCase γ x t acs (ac, ys, ce)
-{-
-  | typedHoles (getConfig γ) 
-    = do  cγ <- caseEnv γ x acs ac ys mempty
-          case ce of 
-            Tick _ (Tick _ (Var v)) ->
-              if isHoleVar v 
-                then do cγ' <- cγ += ("holeCase", F.symbol v, t) 
-                        cgi0 <- get 
-                        let info0 = ghcI cgi0
-                            cfg = getConfig cγ' 
-                        -- consAct0 cγ' cfg info0
-                        hcs <- hsCs  <$> get
-                        hws <- hsWfs <$> get
-                        fcs <- concat <$> mapM splitC hcs
-                        fws <- concat <$> mapM splitW hws
-                        modify $ \st -> st { fEnv     = feEnv (fenv cγ)
-                                          , cgLits   = litEnv   cγ
-                                          , cgConsts = (cgConsts st) `mappend` (constEnv cγ)
-                                          , fixCs    = fcs
-                                          , fixWfs   = fws } 
-                        cgi1 <- get
-                        let info = ghcI cgi1
-                            fs = files cfg
-                            tgt = head fs
-                            fcfg = fixConfig tgt cfg 
-                            finfo = unsafePerformIO (cgInfoFInfo info cgi1) 
-                            F.Result _ sol _ = unsafePerformIO (solve fcfg{F.srcFile = "SCheck" <> F.srcFile fcfg} finfo)
-                        put cgi0 
-                        trace (" [ cconsCase ] v = " ++ show v ++ " type = " ++ show t ++ " sol " ++ show sol) $  
-                          cconsE cγ' ce t 
-                else cconsE cγ ce t 
-            _ -> cconsE cγ ce t
-  | otherwise 
--}
-    = do  cγ <- caseEnv γ x acs ac ys mempty
-          cconsE cγ ce t 
+  = do  cγ <- caseEnv γ x acs ac ys mempty
+        cconsE cγ ce t 
 
 {- 
 

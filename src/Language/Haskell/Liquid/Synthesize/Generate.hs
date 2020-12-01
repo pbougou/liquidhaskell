@@ -22,7 +22,6 @@ import           Data.List
 import           CoreUtils (exprType)
 import           Var
 import           Data.Tuple.Extra
-import           Debug.Trace
 import           Language.Fixpoint.Types.PrettyPrint (tracepp)
 import           TyCoRep
 import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
@@ -30,8 +29,7 @@ import           Language.Fixpoint.Types.Refinements
 -- Generate terms that have type t: This changes the @ExprMemory@ in @SM@ state.
 -- Return expressions type checked against type @specTy@.
 genTerms :: SpecType -> SM [CoreExpr] 
-genTerms t = 
-  trace (" genTerms t " ++ show t) $ genTerms' ResultMode t
+genTerms = genTerms' ResultMode
 
 
 data SearchMode 
@@ -43,7 +41,7 @@ data SearchMode
 hasHType :: SpecType -> CoreExpr -> SM Bool
 hasHType t e = 
   if checkTrueType t then return (toType t == exprType e)
-                     else hasType " check " t e
+                     else hasType t e
 
 genTerms' :: SearchMode -> SpecType -> SM [CoreExpr] 
 genTerms' i specTy = 
@@ -57,16 +55,9 @@ genTerms' i specTy =
       es0   <- structuralCheck es
 
       err <- checkError specTy 
-      trace ( "\ngenTerms' " ++ show specTy ++ 
-              "\ngoalTys " ++ show (map showTy goalTys) ++
-              "\nfnTys " ++ show (map snd3 fnTys) ++ 
-              "\nExpressions es " ++ show es) $
-        case err of 
-          Nothing -> do 
-            produced <- withDepthFill i specTy 0 fnTys
-            trace (" Produced for t " ++ show specTy ++ "\nExprs" ++ show produced) $ 
-              filterElseM (hasHType specTy) es0 $ withDepthFill i specTy 0 fnTys
-          Just e -> return [e]
+      case err of 
+        Nothing -> filterElseM (hasType specTy) es0 $ withDepthFill i specTy 0 fnTys
+        Just e -> return [e]
 
 genArgs :: SpecType -> SM [CoreExpr]
 genArgs t =
@@ -83,12 +74,12 @@ genArgs t =
         Just _  -> return []
 
 withDepthFillArgs :: SpecType -> Int -> [(Type, CoreExpr, Int)] -> SM [CoreExpr]
-withDepthFillArgs t depth cs = trace (" NEW For t " ++ show t ++ " Check " ++ show (checkTrueType t)) $ do
+withDepthFillArgs t depth cs = do
   thisEm <- sExprMem <$> get
   es <- argsFill thisEm cs []
   argsDepth <- localMaxArgsDepth
 
-  filterElseM (hasHType t) es $
+  filterElseM (hasType t) es $
     if depth < argsDepth
       then  -- trace (" [ withDepthFillArgs ] argsDepth = " ++ show argsDepth) $ 
             withDepthFillArgs t (depth + 1) cs
@@ -114,17 +105,15 @@ argsFill em0 (c:cs) es0 =
 checkTrueType :: SpecType -> Bool 
 checkTrueType (RApp _ _ _ (MkUReft (Reft (s, PTrue)) _)) 
   = True
-checkTrueType t@(RApp _ _ _ (MkUReft (Reft (s, e)) _)) 
-  = trace (" Type " ++ show t ++ " checkTrueType fixpoint expr " ++ show e) False
 checkTrueType t 
-  = trace (" False case Type " ++ show t) False
+  = False
 
 withDepthFill :: SearchMode -> SpecType -> Int -> [(Type, GHC.CoreExpr, Int)] -> SM [CoreExpr]
 withDepthFill i t depth tmp = do
   exprs <- fill i depth tmp []
   appDepth <- localMaxAppDepth
 
-  filterElseM (hasHType t) exprs $ 
+  filterElseM (hasType t) exprs $ 
       if depth < appDepth
         then do modify (\s -> s { sExprId = sExprId s + 1 })
                 withDepthFill i t (depth + 1) tmp
