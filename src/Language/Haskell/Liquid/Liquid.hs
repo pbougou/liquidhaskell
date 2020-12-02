@@ -271,8 +271,10 @@ solveCs cfg tgt cgi info names = do
                                  `addErrors` makeFailErrors (S.toList failBs) rf 
                                  `addErrors` makeFailUseErrors (S.toList failBs) (giCbs $ giSrc info)
   let lErrors       = applySolution sol <$> logErrors cgi
-  hErrors          <- if (typedHoles cfg) 
-                        then synthesize tgt fcfg (cgi{holesMap = applySolution sol <$> holesMap  cgi}) 
+  hErrors          <- if typedHoles cfg 
+                        then do 
+                          (errors, _) <- synthesize tgt fcfg (cgi{holesMap = applySolution sol <$> holesMap  cgi}) 
+                          return errors
                         else return [] 
   let resModel      = resModel' `addErrors` (e2u cfg sol <$> (lErrors ++ hErrors)) 
   let out0          = mkOutput cfg resModel sol (annotMap cgi)

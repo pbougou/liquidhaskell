@@ -98,7 +98,7 @@ countApps e i
 
 getInnerExpr :: CoreExpr -> CoreExpr 
 getInnerExpr (Lam a e) = Lam a (getInnerExpr e)
-getInnerExpr (App e1 e2) = getInnerExpr e1
+getInnerExpr (App e1 _e2) = getInnerExpr e1
 getInnerExpr e = e
 
 eliminateInnerLams :: Int -> Int -> CoreExpr -> CoreExpr 
@@ -106,12 +106,12 @@ eliminateInnerLams i j (Lam a e)
   = if j > 0 then Lam a (eliminateInnerLams i (j-1) e) else checkTransform i (Lam a e)
 eliminateInnerLams i j (Let b e) 
   = Let b (eliminateInnerLams i j e)
-eliminateInnerLams i j e 
+eliminateInnerLams i _j e 
   = checkTransform i e
 
 checkTransform :: Int -> CoreExpr -> CoreExpr
 checkTransform i (Lam a e) = if i > 0 then checkTransform (i-1) e else Lam a e
-checkTransform i e = e 
+checkTransform _i e = e 
 
 topHole :: CoreExpr -> CoreExpr
 topHole e0 = 

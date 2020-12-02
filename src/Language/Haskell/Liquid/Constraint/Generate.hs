@@ -77,11 +77,6 @@ import           Language.Haskell.Liquid.Transforms.CoreToLogic (weakenResult)
 import           Language.Haskell.Liquid.Bare.DataType (makeDataConChecker)
 
 import           Language.Haskell.Liquid.Types hiding (binds, Loc, loc, Def)
-import           Debug.Trace 
-import           Language.Haskell.Liquid.Constraint.ToFixpoint (cgInfoFInfo, fixConfig)
-import           System.IO.Unsafe
-import           Language.Fixpoint.Solver (solve)
-import           System.FilePath.Posix
 --------------------------------------------------------------------------------
 -- | Constraint Generation: Toplevel -------------------------------------------
 --------------------------------------------------------------------------------

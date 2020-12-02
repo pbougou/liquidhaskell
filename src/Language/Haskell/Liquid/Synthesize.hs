@@ -34,12 +34,14 @@ import           Data.Maybe
 import           CoreUtils (exprType)
 import           TyCoRep
 import           Language.Haskell.Liquid.GHC.Play
-import           Debug.Trace 
+-- import           Debug.Trace 
 import           Language.Fixpoint.Types.Visitor (mapKVars)
-import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
-synthesize :: FilePath -> F.Config -> CGInfo -> IO [Error]
-synthesize tgt fcfg cginfo = 
-  mapM go (M.toList $ holesMap cginfo)
+-- import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
+synthesize :: FilePath -> F.Config -> CGInfo -> IO ([Error], [(Var, GHC.CoreProgram, Var, [GHC.CoreExpr])])
+synthesize tgt fcfg cginfo = do
+  sols <- mapM go (M.toList $ holesMap cginfo)
+  let (errors, solutions) = unzip sols 
+  return (errors, solutions)
   where 
     measures = map (val . msName) ((gsMeasures . gsData . giSpec . ghcI) cginfo)
     go (x, HoleInfo rType loc env (cgi,cge)) = do 
@@ -66,53 +68,10 @@ synthesize tgt fcfg cginfo =
       fills <- synthesize' ctx cgi senv1 todo topLvlBndr typeOfTopLvlBnd foralls state0
 
       notrace (" SYNTHESIS TODO Type: " ++ show todo ++ " RType " ++ show rType) $
-        return $ ErrHole loc (
+        return (ErrHole loc (
           if not (null fills)
             then text "\n Hole Fills:" $+$ pprintMany (map (coreToHs typeOfTopLvlBnd topLvlBndr . fromAnf) fills)
-            else mempty) mempty (symbol x) typeOfTopLvlBnd 
-
-findDef :: GHC.CoreProgram -> Var -> Bool 
-findDef []     _ = False
-findDef (x:xs) v = 
-  case x of 
-    bnd@(GHC.NonRec b e) ->  
-      let (f, e1) = topHole e 
-      in  if v == b 
-            then notrace (" FIND DEF Expr = " ++ showpp bnd) $ (f && holeForm e1) || findDef xs v
-            else findDef xs v 
-    _ -> findDef xs v
-
-holeForm :: GHC.CoreExpr -> Bool
-holeForm (GHC.Tick _ (GHC.Tick _ (GHC.Var v))) = isHoleVar v
-holeForm _ = False 
-
-countLams :: GHC.CoreExpr -> Int -> (Int, CoreExpr)
-countLams (GHC.Lam _ e) i 
-  = countLams e (i+1)
-countLams e i = (i, e)
-
-countApps :: GHC.CoreExpr -> Int -> (Bool, GHC.CoreExpr)
-countApps (GHC.App e1 e2) i = 
-  countApps e1 (i-1)
-countApps e i 
-  | i == 0    = (True, e)
-  | otherwise = (False, e)
-
-unLam :: Int -> GHC.CoreExpr -> (Bool, GHC.CoreExpr)
-unLam i (GHC.Lam _ e) = unLam (i-1) e
-unLam i e | i == 0    = (True, e)
-          | otherwise = (False, e)
-
-topHole :: CoreExpr -> (Bool, CoreExpr)
-topHole e0 = 
-  let (i, e1) = countLams e0 0 
-      (b, e2) = countApps e1 i 
-  in  if b  then  case e2 of 
-                    (GHC.Let _ (GHC.Let _ e3)) -> 
-                      let (flag, e4) = unLam i e3
-                      in  (flag, e4)
-                    _ -> (False, e2)
-            else  (False, e2)
+            else mempty) mempty (symbol x) typeOfTopLvlBnd, (x, coreProgram, topLvlBndr, fills)) 
 
 synthesize' :: SMT.Context -> CGInfo -> SSEnv -> SpecType ->  Var -> SpecType -> [Var] -> SState -> IO [CoreExpr]
 synthesize' ctx cgi senv tx xtop ttop foralls st2

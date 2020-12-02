@@ -22,10 +22,11 @@ import           Data.List
 import           CoreUtils (exprType)
 import           Var
 import           Data.Tuple.Extra
-import           Language.Fixpoint.Types.PrettyPrint (tracepp)
+-- import           Language.Fixpoint.Types.PrettyPrint (tracepp)
 import           TyCoRep
-import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
-import           Language.Fixpoint.Types.Refinements
+-- import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
+-- import           Language.Fixpoint.Types.Refinements
+
 -- Generate terms that have type t: This changes the @ExprMemory@ in @SM@ state.
 -- Return expressions type checked against type @specTy@.
 genTerms :: SpecType -> SM [CoreExpr] 
@@ -38,16 +39,16 @@ data SearchMode
   | ResultMode        -- ^ searching for the hole fill 
   deriving (Eq, Show) 
 
-hasHType :: SpecType -> CoreExpr -> SM Bool
-hasHType t e = 
-  if checkTrueType t then return (toType t == exprType e)
-                     else hasType t e
+-- hasHType :: SpecType -> CoreExpr -> SM Bool
+-- hasHType t e = 
+--   if checkTrueType t then return (toType t == exprType e)
+--                      else hasType t e
 
 genTerms' :: SearchMode -> SpecType -> SM [CoreExpr] 
 genTerms' i specTy = 
   do  goalTys <- sGoalTys <$> get
       case find (== toType specTy) goalTys of 
-        Nothing -> modify (\s -> s { sGoalTys = (toType specTy) : sGoalTys s })
+        Nothing -> modify (\s -> s { sGoalTys = toType specTy : sGoalTys s })
         Just _  -> return ()
       fixEMem specTy 
       fnTys <- functionCands (toType specTy)
@@ -102,11 +103,11 @@ argsFill em0 (c:cs) es0 =
           modify (\s -> s {sExprMem = nextEm ++ sExprMem s })
           argsFill em0 cs (es ++ es0)
 
-checkTrueType :: SpecType -> Bool 
-checkTrueType (RApp _ _ _ (MkUReft (Reft (s, PTrue)) _)) 
-  = True
-checkTrueType t 
-  = False
+-- checkTrueType :: SpecType -> Bool 
+-- checkTrueType (RApp _ _ _ (MkUReft (Reft (s, PTrue)) _)) 
+--   = True
+-- checkTrueType t 
+--   = False
 
 withDepthFill :: SearchMode -> SpecType -> Int -> [(Type, GHC.CoreExpr, Int)] -> SM [CoreExpr]
 withDepthFill i t depth tmp = do

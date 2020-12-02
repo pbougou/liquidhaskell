@@ -25,7 +25,8 @@ import           TysWiredIn
 
 import           Data.List
 import           Data.List.Split
-import           Debug.Trace
+-- import           Debug.Trace
+import           Language.Haskell.Liquid.GHC.Play (isHoleVar)
 
 instance Default Type where
     def = TyVarTy alphaTyVar 
@@ -404,7 +405,7 @@ caseVarsE _ = []
 
 allVars :: GHC.CoreExpr -> [Var]
 allVars (GHC.Lam a e) = a : allVars e
-allVars (GHC.Let (GHC.NonRec v0 e0) e1) = allVars e1
+allVars (GHC.Let (GHC.NonRec _v0 _e0) e1) = allVars e1
 allVars (GHC.Case _ b _ alts) = foldr (\(_, bs, e) res -> bs ++ allVars e ++ res) [b] alts 
 allVars (GHC.Tick _ e) = allVars e
 allVars (GHC.App e1 e2) = allVars e1 ++ allVars e2
@@ -440,3 +441,46 @@ argsE _ = []
 
 notrace :: String -> a -> a 
 notrace _ a = a
+
+findDef :: GHC.CoreProgram -> Var -> Bool 
+findDef []     _ = False
+findDef (x:xs) v = 
+  case x of 
+    bnd@(GHC.NonRec b e) ->  
+      let (f, e1) = topHole e 
+      in  if v == b 
+            then notrace (" FIND DEF Expr = " ++ showpp bnd) $ (f && holeForm e1) || findDef xs v
+            else findDef xs v 
+    _ -> findDef xs v
+
+holeForm :: GHC.CoreExpr -> Bool
+holeForm (GHC.Tick _ (GHC.Tick _ (GHC.Var v))) = isHoleVar v
+holeForm _ = False 
+
+countLams :: GHC.CoreExpr -> Int -> (Int, CoreExpr)
+countLams (GHC.Lam _ e) i 
+  = countLams e (i+1)
+countLams e i = (i, e)
+
+countApps :: GHC.CoreExpr -> Int -> (Bool, GHC.CoreExpr)
+countApps (GHC.App e1 _) i = 
+  countApps e1 (i-1)
+countApps e i 
+  | i == 0    = (True, e)
+  | otherwise = (False, e)
+
+unLam :: Int -> GHC.CoreExpr -> (Bool, GHC.CoreExpr)
+unLam i (GHC.Lam _ e) = unLam (i-1) e
+unLam i e | i == 0    = (True, e)
+          | otherwise = (False, e)
+
+topHole :: CoreExpr -> (Bool, CoreExpr)
+topHole e0 = 
+  let (i, e1) = countLams e0 0 
+      (b, e2) = countApps e1 i 
+  in  if b  then  case e2 of 
+                    (GHC.Let _ (GHC.Let _ e3)) -> 
+                      let (flag, e4) = unLam i e3
+                      in  (flag, e4)
+                    _ -> (False, e2)
+            else  (False, e2)
