@@ -34,8 +34,9 @@ import           Data.Maybe
 import           CoreUtils (exprType)
 import           TyCoRep
 import           Language.Haskell.Liquid.GHC.Play
--- import           Debug.Trace 
+import           Debug.Trace 
 import           Language.Fixpoint.Types.Visitor (mapKVars)
+import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
 -- import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
 synthesize :: FilePath -> F.Config -> CGInfo -> IO ([Error], [(Var, GHC.CoreProgram, Var, [GHC.CoreExpr])])
 synthesize tgt fcfg cginfo = do
@@ -63,18 +64,20 @@ synthesize tgt fcfg cginfo = do
       
       ctx <- SMT.makeContext fcfg tgt
       state0 <- initState ctx fcfg cgi cge env topLvlBndr (reverse uniVars) M.empty
-      let foralls = foralls' ++ fs
+      let foralls = foralls'
+          libraries = fs
           todo = if findDef coreProgram topLvlBndr then typeOfTopLvlBnd else rType
-      fills <- synthesize' ctx cgi senv1 todo topLvlBndr typeOfTopLvlBnd foralls state0
+      fills <- synthesize' ctx cgi senv1 todo topLvlBndr typeOfTopLvlBnd foralls libraries state0
 
-      notrace (" SYNTHESIS TODO Type: " ++ show todo ++ " RType " ++ show rType) $
+      trace (" SYNTHESIS TODO Type: " ++ show todo ++ " RType " ++ show rType ++ " Foralls " ++ show foralls' ++ 
+             " Types of libraries " ++ show (map (showTy . resTy . exprType . GHC.Var) libraries)) $
         return (ErrHole loc (
           if not (null fills)
             then text "\n Hole Fills:" $+$ pprintMany (map (coreToHs typeOfTopLvlBnd topLvlBndr . fromAnf) fills)
             else mempty) mempty (symbol x) typeOfTopLvlBnd, (x, coreProgram, topLvlBndr, fills)) 
 
-synthesize' :: SMT.Context -> CGInfo -> SSEnv -> SpecType ->  Var -> SpecType -> [Var] -> SState -> IO [CoreExpr]
-synthesize' ctx cgi senv tx xtop ttop foralls st2
+synthesize' :: SMT.Context -> CGInfo -> SSEnv -> SpecType ->  Var -> SpecType -> [Var] -> [Var] -> SState -> IO [CoreExpr]
+synthesize' ctx cgi senv tx xtop ttop foralls libraries st2
  = evalSM (go tx) ctx senv st2
   where 
 
@@ -97,7 +100,8 @@ synthesize' ctx cgi senv tx xtop ttop foralls st2
           else do let ts = unifyWith (toType t)
                   if null ts  then modify (\s -> s { sUGoalTy = Nothing } )
                               else modify (\s -> s { sUGoalTy = Just ts } )
-                  modify (\s -> s {sForalls = (foralls, [])})
+                  modify (\s -> s {sCsForalls = (foralls, [])})
+                  modify (\s -> s {sLibraries = (libraries, [])})
                   emem0 <- insEMem0 senv1
                   modify (\s -> s { sExprMem = emem0 })
                   synthesizeBasic t
@@ -118,9 +122,11 @@ synthesize' ctx cgi senv tx xtop ttop foralls st2
               let goalType = subst su to
                   hsGoalTy = toType goalType 
                   ts = unifyWith hsGoalTy
-              if null ts  then modify (\s -> s { sUGoalTy = Nothing } )
-                          else modify (\s -> s { sUGoalTy = Just ts } )
-              modify (\s -> s { sForalls = (foralls, []) } )
+              trace (" Result of unifyWith " ++ show (map showTy ts) ++ " Result type " ++ showTy hsGoalTy) $
+                if null ts  then modify (\s -> s { sUGoalTy = Nothing})
+                            else modify (\s -> s { sUGoalTy = Just ts})
+              modify (\s -> s { sCsForalls = (foralls, [])})
+              modify (\s -> s { sLibraries = (libraries, [])})
               emem0 <- insEMem0 senv1
               modify (\s -> s { sExprMem = emem0 })
               mapM_ (`addDecrTerm` []) ys

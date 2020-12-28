@@ -26,6 +26,7 @@ import           Data.Tuple.Extra
 import           TyCoRep
 -- import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
 -- import           Language.Fixpoint.Types.Refinements
+import           Debug.Trace
 
 -- Generate terms that have type t: This changes the @ExprMemory@ in @SM@ state.
 -- Return expressions type checked against type @specTy@.
@@ -55,10 +56,11 @@ genTerms' i specTy =
       es    <- withTypeEs specTy 
       es0   <- structuralCheck es
 
-      err <- checkError specTy 
-      case err of 
-        Nothing -> filterElseM (hasType specTy) es0 $ withDepthFill i specTy 0 fnTys
-        Just e -> return [e]
+      err <- checkError specTy
+      trace (" [ genTerms' ] Function candidates " ++ show (map snd3 fnTys)) $ 
+        case err of 
+          Nothing -> filterElseM (hasType specTy) es0 $ withDepthFill i specTy 0 fnTys
+          Just e -> return [e]
 
 genArgs :: SpecType -> SM [CoreExpr]
 genArgs t =
@@ -68,10 +70,11 @@ genArgs t =
                       fixEMem t 
                       fnTys <- functionCands (toType t)
                       es <- withDepthFillArgs t 0 fnTys
-                      if null es
-                        then  return []
-                        else  do  -- modify (\s -> s {sExprId = sExprId s + 1})
-                                  return es
+                      trace (" [ genArgs ] " ++ show (map snd3 fnTys)) $
+                        if null es
+                          then  return []
+                          else  do  -- modify (\s -> s {sExprId = sExprId s + 1})
+                                    return es
         Just _  -> return []
 
 withDepthFillArgs :: SpecType -> Int -> [(Type, CoreExpr, Int)] -> SM [CoreExpr]
@@ -249,7 +252,7 @@ prodScrutinees _ _ = error " prodScrutinees "
 synthesizeScrutinee :: [Var] -> SM [CoreExpr]
 synthesizeScrutinee vars = do
   s <- get
-  let foralls = (fst . sForalls) s
+  let foralls = (fst . sCsForalls) s
       insVs = sUniVars s
       fix   = sFix s
       -- Assign higher priority to function candidates that return tuples

@@ -36,7 +36,8 @@ import           CoreUtils                      ( exprType )
 import           Data.Tuple.Extra
 import           TyCon
 import           TyCoRep
-
+import           Debug.Trace
+import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
 localMaxMatchDepth :: SM Int 
 localMaxMatchDepth = maxMatchDepth . getConfig . sCGEnv <$> get
 
@@ -71,8 +72,8 @@ data SState
            , sGoalTyVar :: !(Maybe [TyVar])
            , sUGoalTy   :: !(Maybe [Type])     -- Types used for instantiation.
                                                --   Produced by @withUnify@.
-           , sForalls   :: !([Var], [[Type]])  -- [Var] are the parametric functions (except for the fixpoint)
-                                               --    e.g. Constructors, top-level functions.
+           , sLibraries :: !([Var], [[Type]])  -- Polymorphic libraries
+           , sCsForalls :: !([Var], [[Type]])  -- Polymorphic constructors
                                                -- [[Type]]: all the types that have instantiated [Var] so far.
            , caseIdx    :: !Int                -- [ Temporary ] Index in list of scrutinees.
            , scrutinees :: ![(CoreExpr, Type, TyCon)]
@@ -102,7 +103,7 @@ evalSM act ctx env st = do
 
 initState :: SMT.Context -> F.Config -> CGInfo -> CGEnv -> REnv -> Var -> [Var] -> SSEnv -> IO SState 
 initState ctx fcfg cgi cgenv renv xtop uniVars env = 
-  return $ SState renv env 0 [] ctx cgi cgenv fcfg 0 exprMem0 0 0 0 uniVars xtop [] Nothing Nothing ([], []) 0 []
+  return $ SState renv env 0 [] ctx cgi cgenv fcfg 0 exprMem0 0 0 0 uniVars xtop [] Nothing Nothing ([], []) ([], []) 0 []
   where exprMem0 = initExprMem env
 
 getSEnv :: SM SSEnv
@@ -289,9 +290,9 @@ insEMem0 senv = do
   uniVs <- sUniVars <$> get
 
   let ts = fromMaybe [] mbUTy
-  ts0 <- snd . sForalls <$> get
-  fs0 <- fst . sForalls <$> get
-  modify ( \s -> s { sForalls = (fs0, ts : ts0) } )
+  ts0 <- snd . sCsForalls <$> get
+  fs0 <- fst . sCsForalls <$> get
+  modify ( \s -> s { sCsForalls = (fs0, ts : ts0) } )
 
   let handleIt e = case e of  GHC.Var v -> if xtop == v 
                                               then (instantiate e (Just uniVs), ttop) 
@@ -326,20 +327,82 @@ applyTy (t:ts) e =  case exprType e of
 -- | Instantiation based on current goal-type.
 fixEMem :: SpecType -> SM ()
 fixEMem t
-  = do  (fs, ts) <- sForalls <$> get
+  = do  (fs, ts) <- sCsForalls <$> get
+        (libs, _) <- sLibraries <$> get
         let uTys = unifyWith (toType t)
         needsFix <- case find (== uTys) ts of 
                       Nothing -> return True   -- not yet instantiated
                       Just _  -> return False  -- already instantiated
+        let res x = unify (resTy (exprType (GHC.Var x))) (toType t) 
+            allRes = map res libs -- [[(Var, Type)]]
+            libTs = map (exprType . GHC.Var) libs
+            comb = zip libTs allRes
+            libTs' = map (\(t, vts) -> rmForAllVars t vts) comb
+            comb' = zip libTs' allRes
+            libTs'' = map (\(t, vts) -> subToTypes t vts) comb'
+        trace (" [ fixEMem ] GoalType " ++ show t ++ " Libraries " ++ show libs ++ 
+               " Types of libraries " ++ show (map (showTy . exprType . GHC.Var) libs) ++
+               " ***NEW*** Types of libraries " ++ show (map showTy libTs'') ++  
+               " Unify " ++ show (map (map (\x -> (fst x, showTy (snd x)))) allRes)) $
+          when needsFix $
+            do  modify (\s -> s { sCsForalls = (fs, uTys : ts)})
+                let notForall e = case exprType e of {ForAllTy{} -> False; _ -> True}
+                    es = map (\v -> instantiateTy (GHC.Var v) (Just uTys)) fs
+                    fixEs = filter notForall es
+                thisDepth <- sDepth <$> get
+                let fixedEMem = map (\e -> (exprType e, e, thisDepth + 1)) fixEs
+                modify (\s -> s {sExprMem = fixedEMem ++ sExprMem s})
 
-        when needsFix $
-          do  modify (\s -> s { sForalls = (fs, uTys : ts)})
-              let notForall e = case exprType e of {ForAllTy{} -> False; _ -> True}
-                  es = map (\v -> instantiateTy (GHC.Var v) (Just uTys)) fs
-                  fixEs = filter notForall es
-              thisDepth <- sDepth <$> get
-              let fixedEMem = map (\e -> (exprType e, e, thisDepth + 1)) fixEs
-              modify (\s -> s {sExprMem = fixedEMem ++ sExprMem s})
+-- Get result type of library (library has a function type)
+resTy :: Type -> Type
+resTy (ForAllTy _ t) = resTy t
+resTy (FunTy _ _ t)  = resTy t 
+resTy t              = t
+
+-- Unify result goal type with library result type 
+--  First argument is the result type of the polymorphic library function 
+--  Second argument is the type of the synthesis goal
+unify :: Type -> Type -> [(Var, Type)]
+unify (TyVarTy v) t@(TyConApp c ts) 
+  = [(v, t)] 
+unify (TyConApp c0 ts0) (TyConApp c1 ts1) 
+  = let vs0  = getVar ts0 
+    in  zip vs0 ts1
+unify t0 t1 
+  = trace (" unify wildcard t0 " ++ showTy t0 ++ " t1 " ++ showTy t1) []
+
+getVar :: [Type] -> [Var] 
+getVar [ ] 
+  = [ ]
+getVar (TyVarTy v : ts) 
+  = v : getVar ts
+getVar ts 
+  = trace (" [ getVar ] Not type variable case " ++ show (map showTy ts)) [] 
+
+rmForAllVars :: Type -> [(Var, Type)] -> Type
+rmForAllVars t [] 
+  = t
+rmForAllVars (ForAllTy (Bndr v a) t) vts
+  = case lookup v vts of 
+      Nothing -> ForAllTy (Bndr v a) (rmForAllVars t vts)
+      Just _  -> rmForAllVars t vts
+rmForAllVars t vts
+  = trace (" Got more type variables " ++ showTy t ++ " vs " ++ show (map fst vts) ) t
+
+-- Substitute to library's type
+subToType :: Type -> (Var, Type) -> Type
+subToType t0@(TyVarTy v0) (v, t) = if v0 == v then t else t0
+subToType (AppTy t0 t1) (v, t) = AppTy (subToType t0 (v, t)) (subToType t1 (v, t))
+subToType (TyConApp c ts) (v, t) = TyConApp c (map (\x -> subToType x (v, t)) ts)
+subToType (ForAllTy v0 t0) (v, t) = ForAllTy v0 (subToType t0 (v, t))
+subToType (FunTy a t0 t1) (v, t) = FunTy a (subToType t0 (v, t)) (subToType t1 (v, t))
+subToType t _ = t
+
+subToTypes :: Type -> [(Var, Type)] -> Type
+subToTypes t [] = t
+subToTypes t0 ((v, t):vts) = 
+  let t' = subToType t0 (v, t)
+  in  subToTypes t' vts
 
 ------------------------------------------------------------------------------------------------
 ------------------------------ Special handle for the current fixpoint -------------------------
