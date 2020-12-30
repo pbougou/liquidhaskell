@@ -328,22 +328,30 @@ applyTy (t:ts) e =  case exprType e of
 fixEMem :: SpecType -> SM ()
 fixEMem t
   = do  (fs, ts) <- sCsForalls <$> get
-        (libs, _) <- sLibraries <$> get
+        (libs, lts) <- sLibraries <$> get
         let uTys = unifyWith (toType t)
         needsFix <- case find (== uTys) ts of 
                       Nothing -> return True   -- not yet instantiated
                       Just _  -> return False  -- already instantiated
-        let res x = unify (resTy (exprType (GHC.Var x))) (toType t) 
-            allRes = map res libs -- [[(Var, Type)]]
-            libTs = map (exprType . GHC.Var) libs
-            comb = zip libTs allRes
-            libTs' = map (\(t, vts) -> rmForAllVars t vts) comb
-            comb' = zip libTs' allRes
-            libTs'' = map (\(t, vts) -> subToTypes t vts) comb'
+
+        let libTs = fixLibs libs t 
+        goalTyVar' <- sUGoalTy <$> get
+        uniVs <- sUniVars <$> get
+        let goalTyVar = fromMaybe [] goalTyVar'
+
+        let uLibTys = map TyVarTy uniVs -- TODO Construct types 
+
+        libsNeedFix <-  case find (== uLibTys) ts of
+                          Nothing -> return True 
+                          Just _  -> return False 
+
         trace (" [ fixEMem ] GoalType " ++ show t ++ " Libraries " ++ show libs ++ 
                " Types of libraries " ++ show (map (showTy . exprType . GHC.Var) libs) ++
-               " ***NEW*** Types of libraries " ++ show (map showTy libTs'') ++  
-               " Unify " ++ show (map (map (\x -> (fst x, showTy (snd x)))) allRes)) $
+               " ***NEW*** Types of libraries " ++ show (map showTy libTs) ++
+               " Searching type variables " ++ show (map showTy uTys) ++ 
+               " Goal type variable " ++ show (map showTy goalTyVar) ++ 
+               " Synthesis unification variables " ++ show uniVs ++ 
+               " Ordered variables " ++ show (map (getVarsOrdered . exprType . GHC.Var) libs)) $
           when needsFix $
             do  modify (\s -> s { sCsForalls = (fs, uTys : ts)})
                 let notForall e = case exprType e of {ForAllTy{} -> False; _ -> True}
@@ -352,6 +360,127 @@ fixEMem t
                 thisDepth <- sDepth <$> get
                 let fixedEMem = map (\e -> (exprType e, e, thisDepth + 1)) fixEs
                 modify (\s -> s {sExprMem = fixedEMem ++ sExprMem s})
+
+        when libsNeedFix $
+          do modify (\s -> s {sLibraries = (libs, uLibTys : lts)})
+             let tyCands t0 = [(x, y) | x <- freeTyVars' t0, y <- uLibTys]
+                 libTyCands = map tyCands libTs -- [[(Var, Type)]]
+                 boundVars = map (map fst) uResVars
+                 orderedTyVars = map (getVarsOrdered . exprType . GHC.Var) libs
+                 freeTyVars = getFreeTyVars orderedTyVars boundVars
+                 uResVars = unified libs t 
+                 searched = map (map (\(x, y) -> (x, TyVarTy y))) searched'
+                 searched' = searchTyVars uniVs freeTyVars
+                 vsToTs = combineTyVars uResVars searched
+                 testFn ls = groupBy (\x y -> fst x == fst y) ls -- [[[(Var, Type)]]]
+                 test = map testFn libTyCands
+                 vs3 = map (map head) (map (map (map fst)) test) 
+                 ts3 = map (map (map snd)) test
+                 orderedBinds = maintain orderedTyVars vsToTs
+                 orderedTs = map (map snd) orderedBinds
+                 instantiated = instantiateLibs libs orderedTs
+                 notForall e = case exprType e of {ForAllTy{} -> False; _ -> True}
+                 fixedLibs = filter notForall instantiated 
+             curDepth <- sDepth <$> get
+             let emem1 = map (\e -> (exprType e, e, curDepth + 1)) fixedLibs
+
+             trace (" Bound Variables " ++ show boundVars ++ 
+                    " Free Vars " ++ show freeTyVars ++ 
+                    " searched " ++ show (map (map fst) orderedBinds) ++
+                    " instantiated " ++ show instantiated) $
+              modify (\s -> s {sExprMem = emem1 ++ sExprMem s})
+
+instantiateLibs :: [Var] -> [[Type]] -> [CoreExpr]
+instantiateLibs [] []
+  = []
+instantiateLibs (v:vs) (ts0:ts)
+  = instantiateTy (GHC.Var v) (Just ts0) : instantiateLibs vs ts
+instantiateLibs _ _ 
+  = error " instantiateLibs "
+
+-- First: type variables as they appear at the initial library function type
+-- Second: bindings from type variables to types as they were created by the unification and search
+-- Order second argument with respect to the first 
+maintain :: [[Var]] -> [[(Var, Type)]] -> [[(Var, Type)]]
+maintain [] [] 
+  = []
+maintain (vs0:vs) (tvs0:tvs) 
+  = maintain' vs0 tvs0 : maintain vs tvs
+maintain _ _ 
+  = error " maintain "
+
+maintain' :: [Var] -> [(Var, Type)] -> [(Var, Type)]
+maintain' []     _
+  = []
+maintain' (v:vs) tvs
+  = case lookup v tvs of 
+      Nothing -> error $ " Should contain type variable " ++ show v
+      Just t  -> (v, t) : maintain' vs tvs
+
+-- First argument: type variables used in current top level function 
+searchTyVars :: [Var] -> [[Var]] -> [[(Var, Var)]]
+searchTyVars _  []
+  = []
+searchTyVars vs (f:fs) 
+  = [(x, y) | x <- f, y <- vs] : searchTyVars vs fs
+
+combineTyVars :: [[(Var, Type)]] -> [[(Var, Type)]] -> [[(Var, Type)]]
+combineTyVars [] [] 
+  = []
+combineTyVars (tvs0:tvs) (tvs1:tvs') 
+  = (tvs0 ++ tvs1) : combineTyVars tvs tvs'
+combineTyVars tvs tvs' 
+  = error $ " [ combineTyVars ] tvs " ++ show (map (map fst) tvs) ++ " tvs' " ++ show (map (map fst) tvs')
+
+getFreeTyVars :: [[Var]] -> [[Var]] -> [[Var]]
+getFreeTyVars [] [] = []
+getFreeTyVars (tv:tvs) (btv:btvs) 
+  = (tv \\ btv) : getFreeTyVars tvs btvs
+getFreeTyVars v0 v1 = error (" [ getFreeTyVars ] v0 " ++ show v0 ++ " v1 " ++ show v1)
+
+getVarsOrdered :: Type -> [Var]
+getVarsOrdered (ForAllTy (Bndr v _) t) 
+  = v : getVarsOrdered t
+getVarsOrdered t 
+  = []
+
+reorderVars :: [[[(Var, Type)]]] -> [(Var, Type)]
+reorderVars [ ] = []
+reorderVars (tvs:tvss) = 
+  let vs = map (map fst) tvs -- type variables (should equal to one variable)
+      ts = map (map snd) tvs -- types associated with variables
+  in  trace (" [ reorderVars ] VS " ++ show vs) $
+        reorderVars tvss -- (head vs, concat ts) : reorderVars tvss
+
+-- Perform type application to the term rather than substitution to the type 
+-- Maintain ordering for type application 
+
+-- Get @libTs@ and find free type variables 
+freeTyVars' :: Type -> [Var]
+freeTyVars' (ForAllTy (Bndr v _) t) 
+  = v : freeTyVars' t 
+freeTyVars' t 
+  = [] 
+
+
+-- TODO Construct types for type application 
+
+unified :: [Var] -> SpecType -> [[(Var, Type)]]
+unified libs t =
+  let libU x = unify (resTy (exprType (GHC.Var x))) (resTy (toType t)) 
+  in  map libU libs 
+
+fixLibs :: [Var] -> SpecType -> [Type]
+fixLibs libs t = 
+  let res x   = unify (resTy (exprType (GHC.Var x))) (resTy (toType t)) 
+      allRes  = map res libs -- [[(Var, Type)]]
+      libTs   = map (exprType . GHC.Var) libs
+      comb    = zip libTs allRes
+      libTs'  = map (uncurry rmForAllVars) comb
+      comb'   = zip libTs' allRes
+      libTs'' = map (uncurry subToTypes) comb'
+  in libTs''
+
 
 -- Get result type of library (library has a function type)
 resTy :: Type -> Type

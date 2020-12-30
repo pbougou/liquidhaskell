@@ -484,3 +484,9 @@ topHole e0 =
                       in  (flag, e4)
                     _ -> (False, e2)
             else  (False, e2)
+
+getTopLevelTyVars :: Type -> [Var]
+getTopLevelTyVars (ForAllTy (Bndr v _) t) 
+  = v : getTopLevelTyVars t
+getTopLevelTyVars t 
+  = []
