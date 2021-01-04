@@ -27,6 +27,7 @@ import           TyCoRep
 -- import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
 -- import           Language.Fixpoint.Types.Refinements
 import           Debug.Trace
+import           Language.Haskell.Liquid.GHC.TypeRep (showTy)
 
 -- Generate terms that have type t: This changes the @ExprMemory@ in @SM@ state.
 -- Return expressions type checked against type @specTy@.
@@ -57,7 +58,7 @@ genTerms' i specTy =
       es0   <- structuralCheck es
 
       err <- checkError specTy
-      trace (" [ genTerms' ] Function candidates " ++ show (map snd3 fnTys)) $ 
+      trace (" [ genTerms' ] t = " ++ show specTy ++ " Function candidates " ++ show (map snd3 fnTys)) $ 
         case err of 
           Nothing -> filterElseM (hasType specTy) es0 $ withDepthFill i specTy 0 fnTys
           Just e -> return [e]
@@ -70,7 +71,7 @@ genArgs t =
                       fixEMem t 
                       fnTys <- functionCands (toType t)
                       es <- withDepthFillArgs t 0 fnTys
-                      trace (" [ genArgs ] " ++ show (map snd3 fnTys)) $
+                      trace (" [ genArgs ] t = " ++ show t ++ show (map snd3 fnTys)) $
                         if null es
                           then  return []
                           else  do  -- modify (\s -> s {sExprId = sExprId s + 1})
@@ -97,14 +98,121 @@ argsFill em0 (c:cs) es0 =
     Just (resTy, subGs) -> 
       do  let argCands = map (withSubgoal em0) subGs
               toGen    = foldr (\x b -> (not . null) x && b) True argCands
+              fnArgs   = hasFunArg c 
+              hasFnArg = checkFnArgs fnArgs
           es <- do  curExprId <- sExprId <$> get
-                    if toGen then 
-                      prune curExprId c argCands
-                      else return []
+                    trace (" [ argsFill ] c = " ++ show (snd3 c) ++ 
+                           " toGen flag " ++ show toGen ++ 
+                           " Candidate arguments " ++ show argCands ++ 
+                           " HAVE FUNCTIONS " ++ show (map (\(x, y) -> (showTy x, y)) (hasFunArg c))) $
+                      if toGen 
+                        then prune curExprId c argCands
+                        else 
+                          if hasFnArg 
+                            then do 
+                              fns <- generateFns fnArgs
+                              let argCands' = repairArgs curExprId fns argCands
+                                  checkRepair = repaired argCands'
+                              if checkRepair 
+                                then prune curExprId c argCands'
+                                else return []
+                            else return []
           curExprId <- sExprId <$> get
           let nextEm = map (resTy, , curExprId + 1) es
           modify (\s -> s {sExprMem = nextEm ++ sExprMem s })
           argsFill em0 cs (es ++ es0)
+
+-- TODO Produce new functions only if the other arguments have candidate expressions 
+
+repaired :: [[(CoreExpr, Int)]] -> Bool 
+repaired = foldr (\x b -> (not . null) x && b) True 
+
+repairArgs :: Int -> [(Type, Maybe Int, [CoreExpr])] -> [[(CoreExpr, Int)]] -> [[(CoreExpr, Int)]]
+repairArgs _ [] es
+  = es
+repairArgs curId ((_, mb, es0):ts) es
+  = case mb of 
+      Nothing -> repairArgs curId ts es
+      Just ix -> 
+        let depthEs = map (, curId) es0
+            es'     = changeIx ix depthEs es
+        in  repairArgs curId ts es'
+
+-- First argument is 1-based index.
+changeIx :: Int -> [(CoreExpr, Int)] -> [[(CoreExpr, Int)]] -> [[(CoreExpr, Int)]]
+changeIx = changeIx' 1
+
+changeIx' :: Int -> Int -> [(CoreExpr, Int)] -> [[(CoreExpr, Int)]] -> [[(CoreExpr, Int)]]
+changeIx' _  i _  []
+  = error $ " [ changeIx' ] Index based search: index not found " ++ show i 
+changeIx' i0 i es0 (e:es) 
+  | i0 == i   = es0:es
+  | otherwise = e : changeIx' (i0+1) i es0 es
+
+-- This should be a function type 
+-- Filter expressions used to synthesize the function
+generateFn :: Type -> SM [CoreExpr]
+generateFn t
+  = do  let txs = getFnArg t
+            out = getOutArg t
+        specTxs <- liftCG $ mapM trueTy txs
+        specOut <- liftCG $ trueTy out 
+        ys <- mapM freshVar specTxs
+        GHC.mkLams ys <$$> synthesizeFun specOut
+
+synthesizeFun :: SpecType -> SM [CoreExpr]
+synthesizeFun t 
+  = undefined
+
+generateFns :: [(Type, Maybe Int)] -> SM [(Type, Maybe Int, [CoreExpr])]
+generateFns [] 
+  = return []
+generateFns ((t, mbIx):ts) 
+  = do  es0 <- case mbIx of {Nothing -> return []; Just _ -> generateFn t}  
+        es  <- generateFns ts
+        return ((t, mbIx, es0):es)
+
+checkFnArgs :: [(Type, Maybe Int)] -> Bool
+checkFnArgs [] 
+  = False
+checkFnArgs ((_, Just _):_) 
+  = True 
+checkFnArgs ((_, Nothing):ts) 
+  = checkFnArgs ts
+
+-- Input is always a function.
+hasFunArg :: (Type, CoreExpr, Int) -> [(Type, Maybe Int)]
+hasFunArg (t, _, _) 
+  = let ts  = getFnArg t 
+        fns = map isFn ts 
+        is  = ixs 1 fns
+    in  zip ts is
+
+isFn :: Type -> Bool 
+isFn FunTy{} = True 
+isFn _       = False
+
+getFnArg :: Type -> [Type]
+getFnArg (FunTy _ t1 t2) 
+  = t1 : getFnArg t2
+-- Inserts here when we have the output type
+getFnArg _
+  = []
+
+ixs :: Int -> [Bool] -> [Maybe Int]
+ixs _ []
+  = []
+ixs i (b:bs) 
+  = if b 
+      then Just i : ixs (i+1) bs
+      else Nothing : ixs (i+1) bs
+
+-- Input is a function type
+getOutArg :: Type -> Type 
+getOutArg (FunTy _ _ t2) 
+  = getOutArg t2
+getOutArg t 
+  = t
 
 -- checkTrueType :: SpecType -> Bool 
 -- checkTrueType (RApp _ _ _ (MkUReft (Reft (s, PTrue)) _)) 
@@ -126,8 +234,8 @@ withDepthFill i t depth tmp = do
 fill :: SearchMode -> Int -> [(Type, GHC.CoreExpr, Int)] -> [CoreExpr] -> SM [CoreExpr] 
 fill _ _     []                 accExprs 
   = return accExprs
-fill i depth (c : cs) accExprs 
-  = case subgoals (fst3 c) of 
+fill i depth (c : cs) accExprs =  
+    case subgoals (fst3 c) of 
       Nothing             -> return [] -- Not a function type
       Just (resTy, subGs) ->
         do  specSubGs <- liftCG $ mapM trueTy (filter (not . isFunction) subGs)
@@ -136,9 +244,10 @@ fill i depth (c : cs) accExprs
             let argCands  = map (withSubgoal em) subGs
                 toGen    = foldr (\x b -> (not . null) x && b) True argCands
             newExprs <- do  curExprId <- sExprId <$> get 
-                            if toGen 
-                              then prune curExprId c argCands
-                              else return []
+                            trace (" [ fill ] c = " ++ show (snd3 c) ++ " toGen flag " ++ show toGen ++ " Candidate arguments " ++ show argCands) $
+                              if toGen 
+                                then prune curExprId c argCands
+                                else return []
             curExprId <- sExprId <$> get
             let nextEm = map (resTy, , curExprId + 1) newExprs
             modify (\s -> s {sExprMem = nextEm ++ sExprMem s }) 
