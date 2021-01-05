@@ -77,6 +77,11 @@ data SState
                                                -- [[Type]]: all the types that have instantiated [Var] so far.
            , caseIdx    :: !Int                -- [ Temporary ] Index in list of scrutinees.
            , scrutinees :: ![(CoreExpr, Type, TyCon)]
+           , forLocal   :: !ExprMemory
+           , localFns   :: ![(Type,            -- type of the local function to be produced
+                             ExprMemory,       -- expressions used in local function synthesis 
+                             [CoreExpr],       -- expressions synthesized
+                             Bool)]            -- flag to check if synthesis for this local function happened
            }
 type SM = StateT SState IO
 
@@ -103,7 +108,7 @@ evalSM act ctx env st = do
 
 initState :: SMT.Context -> F.Config -> CGInfo -> CGEnv -> REnv -> Var -> [Var] -> SSEnv -> IO SState 
 initState ctx fcfg cgi cgenv renv xtop uniVars env = 
-  return $ SState renv env 0 [] ctx cgi cgenv fcfg 0 exprMem0 0 0 0 uniVars xtop [] Nothing Nothing ([], []) ([], []) 0 []
+  return $ SState renv env 0 [] ctx cgi cgenv fcfg 0 exprMem0 0 0 0 uniVars xtop [] Nothing Nothing ([], []) ([], []) 0 [] [] [] 
   where exprMem0 = initExprMem env
 
 getSEnv :: SM SSEnv

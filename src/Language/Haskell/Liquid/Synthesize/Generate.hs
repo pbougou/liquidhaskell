@@ -104,13 +104,15 @@ argsFill em0 (c:cs) es0 =
                     trace (" [ argsFill ] c = " ++ show (snd3 c) ++ 
                            " toGen flag " ++ show toGen ++ 
                            " Candidate arguments " ++ show argCands ++ 
-                           " HAVE FUNCTIONS " ++ show (map (\(x, y) -> (showTy x, y)) (hasFunArg c))) $
+                           " HAVE FUNCTIONS " ++ show (map (\(x, y) -> (showTy x, y)) (hasFunArg c)) ++ 
+                           " Library's name " ++ show (getName (snd3 c))) $
                       if toGen 
                         then prune curExprId c argCands
                         else 
                           if hasFnArg 
                             then do 
-                              fns <- generateFns fnArgs
+                              no <- noVars (getName (snd3 c))
+                              fns <- generateFns no fnArgs
                               let argCands' = repairArgs curExprId fns argCands
                                   checkRepair = repaired argCands'
                               if checkRepair 
@@ -121,6 +123,14 @@ argsFill em0 (c:cs) es0 =
           let nextEm = map (resTy, , curExprId + 1) es
           modify (\s -> s {sExprMem = nextEm ++ sExprMem s })
           argsFill em0 cs (es ++ es0)
+
+getName :: CoreExpr -> Var 
+getName (GHC.Var v) 
+  = v
+getName (GHC.App e1 _)
+  = getName e1
+getName e 
+  = error (" [ getName ] Expression " ++ show e)
 
 -- TODO Produce new functions only if the other arguments have candidate expressions 
 
@@ -151,25 +161,95 @@ changeIx' i0 i es0 (e:es)
 
 -- This should be a function type 
 -- Filter expressions used to synthesize the function
-generateFn :: Type -> SM [CoreExpr]
-generateFn t
+generateFn :: [Var] -> Type -> SM [CoreExpr]
+generateFn vs t
   = do  let txs = getFnArg t
             out = getOutArg t
         specTxs <- liftCG $ mapM trueTy txs
         specOut <- liftCG $ trueTy out 
         ys <- mapM freshVar specTxs
-        GHC.mkLams ys <$$> synthesizeFun specOut
+        locals <- localFns <$> get
+        case lookup4 t locals of 
+          Nothing -> 
+            do  localEM <- consLocalEM vs ys
+                modify (\s -> s {localFns = (t, localEM, [], False) : localFns s})
+                GHC.mkLams ys <$$> synthesizeFun t specOut
+          Just (_, es, _) -> 
+            return es
 
-synthesizeFun :: SpecType -> SM [CoreExpr]
-synthesizeFun t 
-  = undefined
+lookup4 :: Eq a => a -> [(a, b, c, d)] -> Maybe (b, c, d)
+lookup4 _ []
+  = Nothing
+lookup4 k ((k0, v1, v2, v3):xs)
+  | k0 == k   = Just (v1, v2, v3)
+  | otherwise = lookup4 k xs
 
-generateFns :: [(Type, Maybe Int)] -> SM [(Type, Maybe Int, [CoreExpr])]
-generateFns [] 
+-- TODO Remove current top level function, current library's name, constructors.
+noVars :: Var -> SM [Var]
+noVars v = 
+  do  st <- get 
+      let ctl = sFix st 
+          cs = sCsForalls st 
+      return (v : ctl : fst cs)
+
+
+localFilter :: [Var] -> CoreExpr -> Bool
+localFilter no (GHC.Var v) 
+  = not (exists v no)
+localFilter _ e 
+  = trace (" [ localFilter ] Expression " ++ show e) False
+
+localFilterEM :: [Var] -> [(Type, CoreExpr, Int)] -> [(Type, CoreExpr, Int)]
+localFilterEM no = filter (\(_, e, _) -> localFilter no e)
+
+exists :: Eq a => a -> [a] -> Bool
+exists _ []     = False
+exists k (x:xs) = x == k || exists k xs
+
+localExprMem :: [Var] -> SM [(Type, CoreExpr, Int)] 
+localExprMem no = do 
+  localEM <- forLocal <$> get
+  if null localEM 
+    then do em <- sExprMem <$> get 
+            modify (\s -> s {forLocal = em})
+            return (localFilterEM no em) 
+    else return localEM
+
+withLocals :: Int -> [(Type, CoreExpr, Int)] -> [Var] -> [(Type, CoreExpr, Int)]
+withLocals curId em vs = 
+  let es  = map GHC.Var vs
+      ts  = map exprType es
+      ids = replicate (length es) curId
+  in  zip3 ts es ids ++ em
+
+consLocalEM :: [Var] -> [Var] -> SM [(Type, CoreExpr, Int)]
+consLocalEM no vs = do 
+  filtered <- localExprMem no
+  curExprId <- sExprId <$> get
+  return (withLocals curExprId filtered vs)
+
+-- When the program gets here, @localFns@ are initiated but 
+-- production flag is off. Production flag is used in order to 
+-- separate empty synthesis result from no synthesis.
+synthesizeFun :: Type -> SpecType -> SM [CoreExpr]
+synthesizeFun t0 t 
+  = do  lcs <- localFns <$> get
+        case lookup4 t0 lcs of 
+          Nothing          -> error (" [ synthesizeFun ] Type " ++ show t0)
+          Just (em, es, b) -> 
+            if b 
+              then return es
+              else trace (" [ synthesizeFun ] Expressions to be used " ++ show (map snd3 em)) (withEMProduce em)
+
+withEMProduce :: ExprMemory -> [CoreExpr]
+withEMProduce em = undefined
+
+generateFns :: [Var] -> [(Type, Maybe Int)] -> SM [(Type, Maybe Int, [CoreExpr])]
+generateFns _ [] 
   = return []
-generateFns ((t, mbIx):ts) 
-  = do  es0 <- case mbIx of {Nothing -> return []; Just _ -> generateFn t}  
-        es  <- generateFns ts
+generateFns vs ((t, mbIx):ts) 
+  = do  es0 <- case mbIx of {Nothing -> return []; Just _ -> generateFn vs t}  
+        es  <- generateFns vs ts
         return ((t, mbIx, es0):es)
 
 checkFnArgs :: [(Type, Maybe Int)] -> Bool
