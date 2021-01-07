@@ -27,6 +27,10 @@ myFold op b (Cons x xs) = op xs x (myFold op b xs)
 inc :: Int -> Int 
 inc x = x + 1
 
+{-@ zero :: { v: Int | v == 0 } @-}
+zero :: Int
+zero = 0
+
 {-@ length' :: xs: List a -> { v: Nat | len' xs == v } @-}
 length' :: List a -> Int
 length' = _hole
