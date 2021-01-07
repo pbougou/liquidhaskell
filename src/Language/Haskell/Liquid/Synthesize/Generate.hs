@@ -163,7 +163,9 @@ changeIx' i0 i es0 (e:es)
 -- Filter expressions used to synthesize the function
 generateFn :: [Var] -> Type -> SM [CoreExpr]
 generateFn vs t
-  = do  let txs = getFnArg t
+  = 
+   trace (" [ generateFn ] Type " ++ showTy t) $
+    do  let txs = getFnArg t
             out = getOutArg t
         specTxs <- liftCG $ mapM trueTy txs
         specOut <- liftCG $ trueTy out 
@@ -172,7 +174,8 @@ generateFn vs t
         case lookup4 t locals of 
           Nothing -> 
             do  localEM <- consLocalEM vs ys
-                modify (\s -> s {localFns = (t, localEM, [], False) : localFns s})
+                trace (" [ generateFn ] Type " ++ showTy t ++ " localEM " ++ show (map snd3 localEM)) $ 
+                  modify (\s -> s {localFns = (t, localEM, [], False) : localFns s})
                 GHC.mkLams ys <$$> synthesizeFun t specOut
           Just (_, es, _) -> 
             return es
@@ -211,8 +214,9 @@ localExprMem no = do
   localEM <- forLocal <$> get
   if null localEM 
     then do em <- sExprMem <$> get 
-            modify (\s -> s {forLocal = em})
-            return (localFilterEM no em) 
+            let em' = localFilterEM no em
+            modify (\s -> s {forLocal = em'})
+            return em' 
     else return localEM
 
 withLocals :: Int -> [(Type, CoreExpr, Int)] -> [Var] -> [(Type, CoreExpr, Int)]
@@ -235,20 +239,56 @@ synthesizeFun :: Type -> SpecType -> SM [CoreExpr]
 synthesizeFun t0 t 
   = do  lcs <- localFns <$> get
         case lookup4 t0 lcs of 
-          Nothing          -> error (" [ synthesizeFun ] Type " ++ show t0)
+          Nothing          -> error (" [ synthesizeFun ] Type " ++ showTy t0)
           Just (em, es, b) -> 
             if b 
               then return es
-              else trace (" [ synthesizeFun ] Expressions to be used " ++ show (map snd3 em)) (withEMProduce em)
+              else trace (" [ synthesizeFun ] Type " ++ show t ++ 
+                          " Expressions to be used " ++ show (map snd3 em)) (withEMProduce t em)
 
-withEMProduce :: ExprMemory -> [CoreExpr]
-withEMProduce em = undefined
+withEMProduce :: SpecType -> ExprMemory -> SM [CoreExpr]
+withEMProduce t em = do 
+  let t0      = toType t 
+      locFn   = localFnCands t0 em 
+      locVs   = localVarCands t0 em 
+  result <- searchLocArgs locFn em
+  -- TODO Add variables    
+  trace (" [ withEMProduce ] Refinement type = " ++ show t ++ 
+         " EM Expressions " ++ show (map snd3 em) ++ 
+         " Local function candidates " ++ show (map snd3 locFn) ++ 
+         " Local variables " ++ show (map snd3 locVs) ++ 
+         " Local function synthesis " ++ show result) (return result) 
+
+-- First argument: functions that are used for local function synthesis 
+-- Second argument: local expressions for local function synthesis
+searchLocArgs :: ExprMemory -> ExprMemory -> SM [CoreExpr]
+searchLocArgs [] _ 
+  = return []
+searchLocArgs (c:cs) em 
+  = case subgoals (fst3 c) of 
+      Nothing -> return []
+      Just (resTy, subGs) -> do
+        let argCands = map (withSubgoal em) subGs 
+        es0 <- fillOne c argCands 
+        es <- searchLocArgs cs em
+        trace (" [ searchLocArgs ] " ++
+               " Candidate function " ++ show (snd3 c) ++ 
+               " Candidate arguments " ++ show argCands) (return (es0 ++ es))
+
+-- Assume that all functions in EM are instantiated 
+localFnCands :: Type -> ExprMemory -> ExprMemory 
+localFnCands t0 = filter (\x -> isFn (fst3 x) && resTy (fst3 x) == t0)
+
+localVarCands :: Type -> ExprMemory -> ExprMemory 
+localVarCands t0 = filter (\x -> isVar (snd3 x) && resTy (fst3 x) == t0)
 
 generateFns :: [Var] -> [(Type, Maybe Int)] -> SM [(Type, Maybe Int, [CoreExpr])]
 generateFns _ [] 
   = return []
 generateFns vs ((t, mbIx):ts) 
-  = do  es0 <- case mbIx of {Nothing -> return []; Just _ -> generateFn vs t}  
+  = 
+   trace (" [ generateFns ] Type " ++ showTy t ++ " maybe index " ++ show mbIx) $
+    do  es0 <- case mbIx of {Nothing -> return []; Just _ -> generateFn vs t}  
         es  <- generateFns vs ts
         return ((t, mbIx, es0):es)
 
@@ -321,13 +361,29 @@ fill i depth (c : cs) accExprs =
         do  specSubGs <- liftCG $ mapM trueTy (filter (not . isFunction) subGs)
             mapM_ genArgs specSubGs
             em <- sExprMem <$> get
-            let argCands  = map (withSubgoal em) subGs
+            let argCands = map (withSubgoal em) subGs
                 toGen    = foldr (\x b -> (not . null) x && b) True argCands
+                fnArgs   = hasFunArg c 
+                hasFnArg = checkFnArgs fnArgs
             newExprs <- do  curExprId <- sExprId <$> get 
-                            trace (" [ fill ] c = " ++ show (snd3 c) ++ " toGen flag " ++ show toGen ++ " Candidate arguments " ++ show argCands) $
+                            trace (" [ fill ] c = " ++ show (snd3 c) ++ 
+                                   " toGen flag " ++ show toGen ++ 
+                                   " Candidate arguments " ++ show argCands ++ 
+                                   " HAVE FUNCTIONS " ++ show (map (\(x, y) -> (showTy x, y)) (hasFunArg c)) ++
+                                   " Library's name " ++ show (getName (snd3 c))) $
                               if toGen 
                                 then prune curExprId c argCands
-                                else return []
+                                else 
+                                  if hasFnArg 
+                                    then do 
+                                      no <- noVars (getName (snd3 c))
+                                      fns <- generateFns no fnArgs 
+                                      let argCands' = repairArgs curExprId fns argCands
+                                          checkRepair = repaired argCands' 
+                                      if checkRepair 
+                                        then prune curExprId c argCands' 
+                                        else return []
+                                    else return []
             curExprId <- sExprId <$> get
             let nextEm = map (resTy, , curExprId + 1) newExprs
             modify (\s -> s {sExprMem = nextEm ++ sExprMem s }) 
